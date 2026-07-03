@@ -56,11 +56,13 @@ func run() error {
 		hostDelays[host] = time.Duration(ms) * time.Millisecond
 	}
 	client := fetch.New(fetch.Options{
-		UserAgent:       cfg.HTTP.UserAgent,
-		MinDelay:        time.Duration(cfg.HTTP.MinDelayMS) * time.Millisecond,
-		Timeout:         time.Duration(cfg.HTTP.TimeoutSeconds) * time.Second,
-		HostDelays:      hostDelays,
-		BrowserTLSHosts: cfg.HTTP.BrowserTLSHosts,
+		UserAgent:         cfg.HTTP.UserAgent,
+		MinDelay:          time.Duration(cfg.HTTP.MinDelayMS) * time.Millisecond,
+		Timeout:           time.Duration(cfg.HTTP.TimeoutSeconds) * time.Second,
+		HostDelays:        hostDelays,
+		BrowserTLSHosts:   cfg.HTTP.BrowserTLSHosts,
+		FlareSolverrURL:   cfg.HTTP.FlareSolverrURL,
+		FlareSolverrHosts: cfg.HTTP.FlareSolverrHosts,
 	})
 	enabledSources := func() []source.Source { return source.Enabled(cfg.SourceEnabled) }
 	scr := scraper.New(st, client, enabledSources, log)

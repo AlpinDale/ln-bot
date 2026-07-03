@@ -46,6 +46,11 @@ type HTTP struct {
 	// BrowserTLSHosts request a browser-shaped TLS handshake for hosts
 	// whose Cloudflare protection gates on JA3 fingerprint.
 	BrowserTLSHosts []string `yaml:"browser_tls_hosts"`
+	// FlareSolverrURL points at a FlareSolverr instance for solving
+	// Cloudflare managed challenges. Overridable via LNBOT_FLARESOLVERR_URL.
+	FlareSolverrURL string `yaml:"flaresolverr_url"`
+	// FlareSolverrHosts route through FlareSolverr when its URL is set.
+	FlareSolverrHosts []string `yaml:"flaresolverr_hosts"`
 }
 
 // SourceConfig holds per-source settings. Extra keys are preserved so
@@ -68,6 +73,9 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.applyDefaults()
 	cfg.Discord.Token = os.Getenv("LNBOT_DISCORD_TOKEN")
+	if v := os.Getenv("LNBOT_FLARESOLVERR_URL"); v != "" {
+		cfg.HTTP.FlareSolverrURL = v
+	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -116,10 +124,15 @@ func (c *Config) applyDefaults() {
 	if c.HTTP.HostDelayMS["viz.com"] < 2000 {
 		c.HTTP.HostDelayMS["viz.com"] = 2000
 	}
-	// Seven Seas' Cloudflare gates on TLS fingerprint; always use the
-	// browser TLS path for it.
+	// Seven Seas' Cloudflare gates on TLS fingerprint from residential
+	// IPs (browser-TLS suffices) but throws a full managed challenge from
+	// datacenter IPs — so it's wired for both: FlareSolverr when
+	// available, browser-TLS otherwise.
 	if !contains(c.HTTP.BrowserTLSHosts, "sevenseasentertainment.com") {
 		c.HTTP.BrowserTLSHosts = append(c.HTTP.BrowserTLSHosts, "sevenseasentertainment.com")
+	}
+	if !contains(c.HTTP.FlareSolverrHosts, "sevenseasentertainment.com") {
+		c.HTTP.FlareSolverrHosts = append(c.HTTP.FlareSolverrHosts, "sevenseasentertainment.com")
 	}
 	if c.Sources == nil {
 		c.Sources = map[string]SourceConfig{}

@@ -5,7 +5,9 @@
 package fetch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -40,6 +42,13 @@ type Options struct {
 	// handshake (e.g. sevenseasentertainment.com). Requests to these
 	// hosts use a Chrome TLS profile; the honest User-Agent is kept.
 	BrowserTLSHosts []string
+	// FlareSolverrURL, when set, is a FlareSolverr instance (headless
+	// Chrome) used to solve Cloudflare *managed challenges* — which a TLS
+	// fingerprint alone can't pass (notably from datacenter IPs).
+	FlareSolverrURL string
+	// FlareSolverrHosts route through FlareSolverr when FlareSolverrURL is
+	// set; otherwise those hosts fall back to the browser-TLS path.
+	FlareSolverrHosts []string
 }
 
 // Client is a rate-limited HTTP client shared by all source plugins.
@@ -56,6 +65,10 @@ type Client struct {
 	browser      tlsclient.HttpClient // lazily built; guarded by browserOnce
 	browserOnce  sync.Once
 	browserErr   error
+
+	flareURL   string
+	flareHosts map[string]bool
+	flareHTTP  *http.Client // longer timeout: solving a challenge is slow
 
 	mu      sync.Mutex
 	lastReq time.Time
@@ -84,6 +97,10 @@ func New(opts Options) *Client {
 	for _, h := range opts.BrowserTLSHosts {
 		browserHosts[strings.TrimPrefix(h, "www.")] = true
 	}
+	flareHosts := map[string]bool{}
+	for _, h := range opts.FlareSolverrHosts {
+		flareHosts[strings.TrimPrefix(h, "www.")] = true
+	}
 	return &Client{
 		http:         &http.Client{Timeout: opts.Timeout},
 		userAgent:    opts.UserAgent,
@@ -93,6 +110,9 @@ func New(opts Options) *Client {
 		log:          opts.Logger,
 		browserHosts: browserHosts,
 		timeout:      opts.Timeout,
+		flareURL:     strings.TrimRight(opts.FlareSolverrURL, "/"),
+		flareHosts:   flareHosts,
+		flareHTTP:    &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
@@ -133,6 +153,9 @@ func (c *Client) do(ctx context.Context, rawURL string) (body []byte, retryable 
 		return nil, false, err
 	}
 
+	if c.useFlare(rawURL) {
+		return c.doFlare(ctx, rawURL)
+	}
 	if c.useBrowser(rawURL) {
 		return c.doBrowser(ctx, rawURL)
 	}
@@ -179,6 +202,64 @@ func (c *Client) useBrowser(rawURL string) bool {
 		return false
 	}
 	return c.browserHosts[strings.TrimPrefix(u.Hostname(), "www.")]
+}
+
+func (c *Client) useFlare(rawURL string) bool {
+	if c.flareURL == "" || len(c.flareHosts) == 0 {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return c.flareHosts[strings.TrimPrefix(u.Hostname(), "www.")]
+}
+
+// doFlare fetches through a FlareSolverr instance, which drives headless
+// Chrome to solve the Cloudflare challenge and returns the rendered page.
+func (c *Client) doFlare(ctx context.Context, targetURL string) ([]byte, bool, error) {
+	reqBody, err := json.Marshal(map[string]any{
+		"cmd":        "request.get",
+		"url":        targetURL,
+		"maxTimeout": 60000,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.flareURL+"/v1", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.flareHTTP.Do(req)
+	if err != nil {
+		return nil, true, fmt.Errorf("flaresolverr GET %s: %w", targetURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, true, fmt.Errorf("flaresolverr GET %s: proxy status %d", targetURL, resp.StatusCode)
+	}
+
+	var fr struct {
+		Status   string `json:"status"`
+		Message  string `json:"message"`
+		Solution struct {
+			Status   int    `json:"status"`
+			Response string `json:"response"`
+		} `json:"solution"`
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return nil, true, fmt.Errorf("flaresolverr GET %s: read: %w", targetURL, err)
+	}
+	if err := json.Unmarshal(body, &fr); err != nil {
+		return nil, true, fmt.Errorf("flaresolverr GET %s: decode: %w", targetURL, err)
+	}
+	if fr.Status != "ok" {
+		return nil, true, fmt.Errorf("flaresolverr GET %s: %s", targetURL, fr.Message)
+	}
+	return handleStatus(targetURL, fr.Solution.Status, strings.NewReader(fr.Solution.Response))
 }
 
 // doBrowser issues the request with a Chrome TLS fingerprint. The
