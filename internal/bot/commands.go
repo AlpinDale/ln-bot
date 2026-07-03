@@ -522,9 +522,15 @@ func paginateReleases(releases []model.Release) [][]string {
 	return append(pages, cur)
 }
 
+// truncate shortens s to at most n runes (never splitting a multibyte
+// character), appending an ellipsis when it cuts.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	rs := []rune(s)
+	if len(rs) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	if n <= 1 {
+		return string(rs[:n])
+	}
+	return string(rs[:n-1]) + "…"
 }

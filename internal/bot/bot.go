@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sync/atomic"
 	"time"
 
@@ -75,26 +76,48 @@ func (b *Bot) Start() error {
 // Stop closes the gateway session.
 func (b *Bot) Stop() error { return b.session.Close() }
 
+// Discord embed field limits.
+const (
+	embedTitleMax = 256
+	embedFieldMax = 1024
+)
+
 // PostRelease implements announcer.Poster: one embed per release to the
-// alert channel.
+// alert channel. Fields are clamped to Discord's embed limits and URLs
+// validated, so no single release can fail the whole post.
 func (b *Bot) PostRelease(_ context.Context, r model.Release) error {
 	embed := &discordgo.MessageEmbed{
-		Title:       r.VolumeTitle,
-		URL:         r.URL,
+		Title:       truncate(r.VolumeTitle, embedTitleMax),
 		Description: fmt.Sprintf("**%s** — out now!", r.Publisher),
 		Color:       0x57F287, // green
 		Fields: []*discordgo.MessageEmbedField{
-			{Name: "Series", Value: orDash(r.SeriesTitle), Inline: true},
+			{Name: "Series", Value: truncate(orDash(r.SeriesTitle), embedFieldMax), Inline: true},
 			{Name: "Format", Value: DisplayFormat(r.Format), Inline: true},
 			{Name: "Release date", Value: r.ReleaseDate.Format("2006-01-02"), Inline: true},
 		},
 		Footer: &discordgo.MessageEmbedFooter{Text: "source: " + r.SourceKey},
 	}
-	if r.CoverURL != "" {
+	// Discord rejects the whole embed on a malformed url/thumbnail, so
+	// only set them when valid (and log dropped ones to catch bad data).
+	if validURL(r.URL) {
+		embed.URL = r.URL
+	} else if r.URL != "" {
+		b.log.Warn("dropping invalid release URL", "source", r.SourceKey, "title", r.VolumeTitle, "url", r.URL)
+	}
+	if validURL(r.CoverURL) {
 		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: r.CoverURL}
+	} else if r.CoverURL != "" {
+		b.log.Warn("dropping invalid cover URL", "source", r.SourceKey, "title", r.VolumeTitle, "url", r.CoverURL)
 	}
 	_, err := b.session.ChannelMessageSendEmbed(b.cfg.Discord.AlertChannelID, embed)
 	return err
+}
+
+// validURL reports whether s is an absolute http(s) URL that Discord will
+// accept in an embed.
+func validURL(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
 
 func orDash(s string) string {
