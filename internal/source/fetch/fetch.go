@@ -160,7 +160,10 @@ func handleStatus(rawURL string, status int, body io.Reader) ([]byte, bool, erro
 			return nil, true, fmt.Errorf("GET %s: read body: %w", rawURL, err)
 		}
 		return b, false, nil
-	case status == http.StatusTooManyRequests || status >= 500:
+	case status == http.StatusTooManyRequests || status >= 500 ||
+		status == http.StatusAccepted:
+		// 202 from Cloudflare means "challenge in progress"; a retry
+		// with the warmed cookie jar often clears it.
 		return nil, true, fmt.Errorf("GET %s: status %d", rawURL, status)
 	default:
 		return nil, false, fmt.Errorf("GET %s: status %d", rawURL, status)

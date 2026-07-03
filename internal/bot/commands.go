@@ -104,7 +104,10 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// The remaining commands are quick SQLite queries; /scrape returns
+	// immediately and does its work in the background. A short guard is
+	// enough to keep the interaction responsive.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	var reply string
@@ -256,15 +259,35 @@ func (b *Bot) cmdSources(ctx context.Context) string {
 	return sb.String()
 }
 
-func (b *Bot) cmdScrape(ctx context.Context, i *discordgo.InteractionCreate) string {
+// cmdScrape kicks off a full-catalog scrape in the background and
+// returns immediately: a backfill runs far longer than Discord's
+// interaction window, so the summary is posted to the alert channel when
+// it finishes rather than as an interaction reply.
+func (b *Bot) cmdScrape(_ context.Context, i *discordgo.InteractionCreate) string {
 	if !b.isAdmin(i) {
 		return "You're not allowed to run `/scrape`."
 	}
-	summary, err := b.pipeline(ctx, source.ModeFull)
-	if err != nil {
-		return "Scrape failed: " + err.Error()
+	if !b.scraping.CompareAndSwap(false, true) {
+		return "A scrape is already running — hang tight."
 	}
-	return summary
+
+	go func() {
+		defer b.scraping.Store(false)
+		b.log.Info("manual scrape started")
+		summary, err := b.pipeline(b.rootCtx, source.ModeFull)
+		if err != nil {
+			b.log.Error("manual scrape failed", "err", err)
+			summary = "Scrape failed: " + err.Error()
+		} else {
+			b.log.Info("manual scrape finished", "summary", summary)
+		}
+		if _, err := b.session.ChannelMessageSend(b.cfg.Discord.AlertChannelID,
+			"🔄 "+summary); err != nil {
+			b.log.Error("scrape summary post failed", "err", err)
+		}
+	}()
+
+	return "🔄 Full scrape started — this can take a while. I'll post a summary here when it's done."
 }
 
 // --- pagination ---

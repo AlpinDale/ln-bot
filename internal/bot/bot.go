@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -28,11 +29,15 @@ type Bot struct {
 	loc      *time.Location
 	pipeline PipelineFunc
 	sources  func() []source.Source // registry view for /sources
+	rootCtx  context.Context        // background scrapes run under this
 	log      *slog.Logger
+
+	scraping atomic.Bool // guards against overlapping /scrape runs
 }
 
-// New builds the Bot (does not connect yet).
-func New(cfg *config.Config, st *store.Store, pipeline PipelineFunc, sources func() []source.Source, log *slog.Logger) (*Bot, error) {
+// New builds the Bot (does not connect yet). rootCtx bounds background
+// work (e.g. /scrape) and is cancelled at shutdown.
+func New(cfg *config.Config, st *store.Store, pipeline PipelineFunc, sources func() []source.Source, rootCtx context.Context, log *slog.Logger) (*Bot, error) {
 	s, err := discordgo.New("Bot " + cfg.Discord.Token)
 	if err != nil {
 		return nil, fmt.Errorf("discord session: %w", err)
@@ -46,6 +51,7 @@ func New(cfg *config.Config, st *store.Store, pipeline PipelineFunc, sources fun
 		loc:      cfg.Location(),
 		pipeline: pipeline,
 		sources:  sources,
+		rootCtx:  rootCtx,
 		log:      log,
 	}, nil
 }

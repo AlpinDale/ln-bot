@@ -86,6 +86,12 @@ func run() error {
 		return err
 	}
 
+	// Root context, cancelled on SIGINT/SIGTERM. Whole-scrape work uses
+	// this (no artificial deadline — per-request timeouts live in the
+	// fetch client); it just unblocks in-flight scrapes at shutdown.
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// The announcer's poster is the bot; break the construction cycle by
 	// declaring the pipeline first as a closure over late-bound vars.
 	var ann *announcer.Announcer
@@ -103,7 +109,7 @@ func run() error {
 			res.Sources, res.Fetched, res.New, res.Failures, posted), nil
 	}
 
-	b, err := bot.New(cfg, st, pipeline, source.All, log)
+	b, err := bot.New(cfg, st, pipeline, source.All, rootCtx, log)
 	if err != nil {
 		return err
 	}
@@ -117,9 +123,7 @@ func run() error {
 	// Daily schedule in the configured timezone.
 	c := cron.New(cron.WithLocation(cfg.Location()))
 	_, err = c.AddFunc(cfg.Schedule.Cron, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		summary, err := pipeline(ctx, source.ModeIncremental)
+		summary, err := pipeline(rootCtx, source.ModeIncremental)
 		if err != nil {
 			log.Error("scheduled run failed", "err", err)
 			return
@@ -138,10 +142,7 @@ func run() error {
 		"sources_enabled", len(enabledSources()),
 		"sources_registered", len(source.All()))
 
-	// Block until SIGINT/SIGTERM.
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
+	<-rootCtx.Done()
 	log.Info("shutting down")
 	// Deferred: cron stop (waits for no new jobs), bot close, store close.
 	return nil
