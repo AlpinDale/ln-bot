@@ -34,12 +34,14 @@ http:
   # sevenseasentertainment.com is added automatically.
   browser_tls_hosts:
     - sevenseasentertainment.com
-  # FlareSolverr solves Cloudflare *managed challenges* (needed for hosts
-  # a TLS fingerprint can't pass, e.g. from a datacenter IP). Set the URL
-  # here or via LNBOT_FLARESOLVERR_URL (docker-compose sets it for you).
-  # sevenseasentertainment.com is routed through it automatically when set.
-  # flaresolverr_url: "http://flaresolverr:8191"
-  flaresolverr_hosts:
+  # Cloudflare URL Scanner: fetches anti-bot-gated hosts from Cloudflare's
+  # own infra (defeats challenges aimed at datacenter IPs, e.g. Seven
+  # Seas' SiteGround anti-bot). Credentials come from the environment:
+  # LNBOT_CF_ACCOUNT (account ID) and LNBOT_CF_TOKEN (API token with URL
+  # Scanner Edit permission). sevenseasentertainment.com is routed through
+  # it automatically when credentials are set; otherwise it falls back to
+  # the browser-TLS path above.
+  cf_scanner_hosts:
     - sevenseasentertainment.com
 
 sources:

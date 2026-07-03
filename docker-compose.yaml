@@ -5,20 +5,11 @@ services:
     restart: unless-stopped
     environment:
       LNBOT_DISCORD_TOKEN: ${LNBOT_DISCORD_TOKEN:?set in .env or environment}
-      # Route Cloudflare-managed-challenge hosts (Seven Seas) through the
-      # FlareSolverr sidecar below.
-      LNBOT_FLARESOLVERR_URL: http://flaresolverr:8191
+      # Cloudflare URL Scanner credentials, used to fetch anti-bot-gated
+      # hosts (Seven Seas) from Cloudflare's infrastructure. Optional —
+      # omit to fall back to browser-TLS (works from residential IPs).
+      LNBOT_CF_ACCOUNT: ${LNBOT_CF_ACCOUNT:-}
+      LNBOT_CF_TOKEN: ${LNBOT_CF_TOKEN:-}
     volumes:
       - ./config.yaml:/config.yaml:ro
       - ./data:/data
-    depends_on:
-      - flaresolverr
-
-  # Headless-Chrome proxy that solves Cloudflare managed challenges.
-  # Needed for sites a TLS fingerprint alone can't pass from a datacenter
-  # IP (e.g. sevenseasentertainment.com).
-  flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
-    restart: unless-stopped
-    environment:
-      LOG_LEVEL: warning

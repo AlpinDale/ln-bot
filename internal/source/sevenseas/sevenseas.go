@@ -1,10 +1,12 @@
 // Package sevenseas is the source plugin for Seven Seas Entertainment
 // (light novel imprint: Airship).
 //
-// The whole site sits behind Cloudflare that gates on TLS fingerprint;
-// the shared fetch client handles this via BrowserTLSHosts (configured
-// for sevenseasentertainment.com by default). Data comes from two
-// server-rendered list pages:
+// The whole site sits behind SiteGround's anti-bot, which challenges
+// datacenter IPs. The shared fetch client handles this via the
+// Cloudflare URL Scanner when credentials are set (rendering the page
+// from Cloudflare's infra), falling back to a browser-TLS handshake for
+// residential IPs — both configured for sevenseasentertainment.com by
+// default. Data comes from two server-rendered list pages:
 //
 //   - /release-dates/          upcoming releases (~6 months forward)
 //   - /release-dates/archive/  recently shipped releases

@@ -42,13 +42,15 @@ type Options struct {
 	// handshake (e.g. sevenseasentertainment.com). Requests to these
 	// hosts use a Chrome TLS profile; the honest User-Agent is kept.
 	BrowserTLSHosts []string
-	// FlareSolverrURL, when set, is a FlareSolverr instance (headless
-	// Chrome) used to solve Cloudflare *managed challenges* — which a TLS
-	// fingerprint alone can't pass (notably from datacenter IPs).
-	FlareSolverrURL string
-	// FlareSolverrHosts route through FlareSolverr when FlareSolverrURL is
-	// set; otherwise those hosts fall back to the browser-TLS path.
-	FlareSolverrHosts []string
+	// CFScannerAccount / CFScannerToken enable fetching via the Cloudflare
+	// URL Scanner API: Cloudflare renders the page from its own infra,
+	// which defeats IP-based anti-bot challenges (e.g. SiteGround's, which
+	// challenge datacenter IPs). Both must be set to activate.
+	CFScannerAccount string
+	CFScannerToken   string
+	// CFScannerHosts route through the URL Scanner when it's configured;
+	// otherwise those hosts fall back to the browser-TLS path.
+	CFScannerHosts []string
 }
 
 // Client is a rate-limited HTTP client shared by all source plugins.
@@ -66,9 +68,11 @@ type Client struct {
 	browserOnce  sync.Once
 	browserErr   error
 
-	flareURL   string
-	flareHosts map[string]bool
-	flareHTTP  *http.Client // longer timeout: solving a challenge is slow
+	cfAPI      string // "" when URL Scanner is not configured
+	cfToken    string
+	cfHosts    map[string]bool
+	cfClient   *http.Client  // for URL Scanner API calls
+	cfPollWait time.Duration // between result polls (overridable in tests)
 
 	mu      sync.Mutex
 	lastReq time.Time
@@ -97,9 +101,14 @@ func New(opts Options) *Client {
 	for _, h := range opts.BrowserTLSHosts {
 		browserHosts[strings.TrimPrefix(h, "www.")] = true
 	}
-	flareHosts := map[string]bool{}
-	for _, h := range opts.FlareSolverrHosts {
-		flareHosts[strings.TrimPrefix(h, "www.")] = true
+	cfHosts := map[string]bool{}
+	for _, h := range opts.CFScannerHosts {
+		cfHosts[strings.TrimPrefix(h, "www.")] = true
+	}
+	cfAPI := ""
+	if opts.CFScannerAccount != "" && opts.CFScannerToken != "" {
+		cfAPI = "https://api.cloudflare.com/client/v4/accounts/" +
+			opts.CFScannerAccount + "/urlscanner/v2"
 	}
 	return &Client{
 		http:         &http.Client{Timeout: opts.Timeout},
@@ -110,9 +119,11 @@ func New(opts Options) *Client {
 		log:          opts.Logger,
 		browserHosts: browserHosts,
 		timeout:      opts.Timeout,
-		flareURL:     strings.TrimRight(opts.FlareSolverrURL, "/"),
-		flareHosts:   flareHosts,
-		flareHTTP:    &http.Client{Timeout: 90 * time.Second},
+		cfAPI:        cfAPI,
+		cfToken:      opts.CFScannerToken,
+		cfHosts:      cfHosts,
+		cfClient:     &http.Client{Timeout: 30 * time.Second},
+		cfPollWait:   cfPollInterval,
 	}
 }
 
@@ -153,8 +164,8 @@ func (c *Client) do(ctx context.Context, rawURL string) (body []byte, retryable 
 		return nil, false, err
 	}
 
-	if c.useFlare(rawURL) {
-		return c.doFlare(ctx, rawURL)
+	if c.useCFScanner(rawURL) {
+		return c.doCFScan(ctx, rawURL)
 	}
 	if c.useBrowser(rawURL) {
 		return c.doBrowser(ctx, rawURL)
@@ -204,62 +215,173 @@ func (c *Client) useBrowser(rawURL string) bool {
 	return c.browserHosts[strings.TrimPrefix(u.Hostname(), "www.")]
 }
 
-func (c *Client) useFlare(rawURL string) bool {
-	if c.flareURL == "" || len(c.flareHosts) == 0 {
+func (c *Client) useCFScanner(rawURL string) bool {
+	if c.cfAPI == "" || len(c.cfHosts) == 0 {
 		return false
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
 	}
-	return c.flareHosts[strings.TrimPrefix(u.Hostname(), "www.")]
+	return c.cfHosts[strings.TrimPrefix(u.Hostname(), "www.")]
 }
 
-// doFlare fetches through a FlareSolverr instance, which drives headless
-// Chrome to solve the Cloudflare challenge and returns the rendered page.
-func (c *Client) doFlare(ctx context.Context, targetURL string) ([]byte, bool, error) {
-	reqBody, err := json.Marshal(map[string]any{
-		"cmd":        "request.get",
-		"url":        targetURL,
-		"maxTimeout": 60000,
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.flareURL+"/v1", bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, false, err
-	}
-	req.Header.Set("Content-Type", "application/json")
+// cfScan polling parameters: scans typically finish in ~30-90s.
+const (
+	cfPollInterval = 8 * time.Second
+	cfMaxPolls     = 20
+)
 
-	resp, err := c.flareHTTP.Do(req)
+// doCFScan fetches a URL via the Cloudflare URL Scanner: it creates a
+// scan (Cloudflare renders the page from its own infrastructure, running
+// any JS anti-bot challenge), polls until the scan completes, then
+// returns the captured main-document HTML.
+func (c *Client) doCFScan(ctx context.Context, targetURL string) ([]byte, bool, error) {
+	uuid, retryable, err := c.cfCreateScan(ctx, targetURL)
 	if err != nil {
-		return nil, true, fmt.Errorf("flaresolverr GET %s: %w", targetURL, err)
+		return nil, retryable, err
+	}
+
+	for poll := 0; poll < cfMaxPolls; poll++ {
+		select {
+		case <-time.After(c.cfPollWait):
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+		hash, done, err := c.cfPollResult(ctx, uuid)
+		if err != nil {
+			return nil, true, fmt.Errorf("cfscan %s: %w", targetURL, err)
+		}
+		if !done {
+			continue
+		}
+		if hash == "" {
+			return nil, true, fmt.Errorf("cfscan %s: no captured response", targetURL)
+		}
+		return c.cfFetchResponse(ctx, targetURL, hash)
+	}
+	return nil, true, fmt.Errorf("cfscan %s: scan did not finish in %s",
+		targetURL, time.Duration(cfMaxPolls)*cfPollInterval)
+}
+
+func (c *Client) cfDo(ctx context.Context, method, url string, body []byte) (int, []byte, error) {
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, rdr)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfToken)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.cfClient.Do(req)
+	if err != nil {
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, true, fmt.Errorf("flaresolverr GET %s: proxy status %d", targetURL, resp.StatusCode)
-	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	return resp.StatusCode, b, err
+}
 
-	var fr struct {
-		Status   string `json:"status"`
-		Message  string `json:"message"`
-		Solution struct {
-			Status   int    `json:"status"`
-			Response string `json:"response"`
-		} `json:"solution"`
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+func (c *Client) cfCreateScan(ctx context.Context, targetURL string) (uuid string, retryable bool, err error) {
+	reqBody, _ := json.Marshal(map[string]string{"url": targetURL})
+	status, body, err := c.cfDo(ctx, http.MethodPost, c.cfAPI+"/scan", reqBody)
 	if err != nil {
-		return nil, true, fmt.Errorf("flaresolverr GET %s: read: %w", targetURL, err)
+		return "", true, fmt.Errorf("cfscan create %s: %w", targetURL, err)
 	}
-	if err := json.Unmarshal(body, &fr); err != nil {
-		return nil, true, fmt.Errorf("flaresolverr GET %s: decode: %w", targetURL, err)
+	switch status {
+	case http.StatusOK, http.StatusAccepted:
+		var r struct {
+			UUID string `json:"uuid"`
+		}
+		if err := json.Unmarshal(body, &r); err != nil || r.UUID == "" {
+			return "", true, fmt.Errorf("cfscan create %s: bad response: %s", targetURL, truncate(body))
+		}
+		return r.UUID, false, nil
+	case http.StatusConflict:
+		// A recent scan of this URL exists; reuse the newest.
+		return c.cfSearchRecent(ctx, targetURL)
+	default:
+		return "", true, fmt.Errorf("cfscan create %s: status %d: %s", targetURL, status, truncate(body))
 	}
-	if fr.Status != "ok" {
-		return nil, true, fmt.Errorf("flaresolverr GET %s: %s", targetURL, fr.Message)
+}
+
+// cfSearchRecent finds the most recent existing scan for a URL (used when
+// creation 409s due to Cloudflare's dedup window).
+func (c *Client) cfSearchRecent(ctx context.Context, targetURL string) (string, bool, error) {
+	q := url.Values{"url": {targetURL}, "size": {"1"}}
+	status, body, err := c.cfDo(ctx, http.MethodGet, c.cfAPI+"/search?"+q.Encode(), nil)
+	if err != nil {
+		return "", true, fmt.Errorf("cfscan search %s: %w", targetURL, err)
 	}
-	return handleStatus(targetURL, fr.Solution.Status, strings.NewReader(fr.Solution.Response))
+	if status != http.StatusOK {
+		return "", true, fmt.Errorf("cfscan search %s: status %d", targetURL, status)
+	}
+	var r struct {
+		Tasks []struct {
+			UUID string `json:"uuid"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil || len(r.Tasks) == 0 {
+		return "", true, fmt.Errorf("cfscan search %s: no prior scan", targetURL)
+	}
+	return r.Tasks[0].UUID, false, nil
+}
+
+// cfPollResult checks a scan. done is false while it's still processing
+// (the result endpoint 404s until ready); when done, hash is the main
+// document's response-body hash (the first captured response).
+func (c *Client) cfPollResult(ctx context.Context, uuid string) (hash string, done bool, err error) {
+	status, body, err := c.cfDo(ctx, http.MethodGet, c.cfAPI+"/result/"+uuid, nil)
+	if err != nil {
+		return "", false, err
+	}
+	if status == http.StatusNotFound {
+		return "", false, nil // still processing
+	}
+	if status != http.StatusOK {
+		return "", false, fmt.Errorf("result status %d: %s", status, truncate(body))
+	}
+	var r struct {
+		Task struct {
+			Success bool `json:"success"`
+		} `json:"task"`
+		Lists struct {
+			Hashes []string `json:"hashes"`
+		} `json:"lists"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return "", false, fmt.Errorf("decode result: %w", err)
+	}
+	if !r.Task.Success {
+		return "", false, fmt.Errorf("scan reported failure")
+	}
+	if len(r.Lists.Hashes) == 0 {
+		return "", true, nil
+	}
+	return r.Lists.Hashes[0], true, nil
+}
+
+func (c *Client) cfFetchResponse(ctx context.Context, targetURL, hash string) ([]byte, bool, error) {
+	status, body, err := c.cfDo(ctx, http.MethodGet, c.cfAPI+"/responses/"+hash, nil)
+	if err != nil {
+		return nil, true, fmt.Errorf("cfscan body %s: %w", targetURL, err)
+	}
+	if status != http.StatusOK {
+		return nil, true, fmt.Errorf("cfscan body %s: status %d", targetURL, status)
+	}
+	return body, false, nil
+}
+
+func truncate(b []byte) string {
+	const n = 200
+	if len(b) > n {
+		return string(b[:n]) + "…"
+	}
+	return string(b)
 }
 
 // doBrowser issues the request with a Chrome TLS fingerprint. The
