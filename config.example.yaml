@@ -17,11 +17,6 @@ schedule:
   cron: "0 9 * * *"
   timezone: "America/Los_Angeles"
 
-announce:
-  # How many days back to catch up on unalerted releases
-  # (covers missed runs without re-announcing old backlog).
-  lookback_days: 3
-
 database:
   path: data/lnbot.db
 

@@ -113,7 +113,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	ann = announcer.New(st, b, cfg.Location(), cfg.Announce.LookbackDays, log)
+	ann = announcer.New(st, b, cfg.Location(), log)
 
 	if err := b.Start(); err != nil {
 		return err

@@ -14,7 +14,6 @@ import (
 type Config struct {
 	Discord  Discord                 `yaml:"discord"`
 	Schedule Schedule                `yaml:"schedule"`
-	Announce Announce                `yaml:"announce"`
 	Database Database                `yaml:"database"`
 	HTTP     HTTP                    `yaml:"http"`
 	Sources  map[string]SourceConfig `yaml:"sources"`
@@ -31,10 +30,6 @@ type Discord struct {
 type Schedule struct {
 	Cron     string `yaml:"cron"`
 	Timezone string `yaml:"timezone"`
-}
-
-type Announce struct {
-	LookbackDays int `yaml:"lookback_days"`
 }
 
 type Database struct {
@@ -100,9 +95,6 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Schedule.Timezone == "" {
 		c.Schedule.Timezone = "UTC"
-	}
-	if c.Announce.LookbackDays <= 0 {
-		c.Announce.LookbackDays = 3
 	}
 	if c.Database.Path == "" {
 		c.Database.Path = "data/lnbot.db"

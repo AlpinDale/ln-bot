@@ -21,36 +21,35 @@ type Poster interface {
 
 // Announcer runs the release-day announcement pass.
 type Announcer struct {
-	store    *store.Store
-	poster   Poster
-	loc      *time.Location
-	lookback int
-	log      *slog.Logger
-	now      func() time.Time // injectable for tests
+	store  *store.Store
+	poster Poster
+	loc    *time.Location
+	log    *slog.Logger
+	now    func() time.Time // injectable for tests
 }
 
-// New builds an Announcer. lookbackDays bounds catch-up after missed
-// runs; loc defines what "today" means.
-func New(st *store.Store, poster Poster, loc *time.Location, lookbackDays int, log *slog.Logger) *Announcer {
+// New builds an Announcer. loc defines what "today" means.
+func New(st *store.Store, poster Poster, loc *time.Location, log *slog.Logger) *Announcer {
 	return &Announcer{
-		store:    st,
-		poster:   poster,
-		loc:      loc,
-		lookback: lookbackDays,
-		log:      log,
-		now:      time.Now,
+		store:  st,
+		poster: poster,
+		loc:    loc,
+		log:    log,
+		now:    time.Now,
 	}
 }
 
-// Run posts all unalerted releases with release_date in
-// [today - lookback, today]. A release is marked alerted only after a
-// successful post; a posting failure leaves it eligible for the next run.
-// Returns the number of releases announced.
+// Run posts all unalerted releases dated today (in the configured
+// timezone). A release is marked alerted only after a successful post; a
+// posting failure leaves it eligible for the next run. Returns the number
+// of releases announced.
+//
+// Only today's releases are announced — never a backlog. A backfill or a
+// scrape run on a later day must not retroactively post past releases.
 func (a *Announcer) Run(ctx context.Context) (int, error) {
-	today := a.now().In(a.loc)
-	from := today.AddDate(0, 0, -a.lookback)
+	today := model.DateOnly(a.now().In(a.loc))
 
-	due, err := a.store.UnalertedInWindow(ctx, model.DateOnly(from), model.DateOnly(today))
+	due, err := a.store.UnalertedInWindow(ctx, today, today)
 	if err != nil {
 		return 0, fmt.Errorf("select due releases: %w", err)
 	}

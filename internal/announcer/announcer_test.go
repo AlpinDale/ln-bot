@@ -37,7 +37,7 @@ func setup(t *testing.T) (*store.Store, *fakePoster, *Announcer) {
 	}
 	t.Cleanup(func() { st.Close() })
 	p := &fakePoster{fail: map[string]bool{}}
-	a := New(st, p, time.UTC, 3, slog.Default())
+	a := New(st, p, time.UTC, slog.Default())
 	// Frozen "today": 2026-07-03.
 	a.now = func() time.Time { return time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC) }
 	return st, p, a
@@ -58,22 +58,23 @@ func add(t *testing.T, st *store.Store, title string, d time.Time) {
 	}
 }
 
-func TestAnnouncesOnlyWindow(t *testing.T) {
-	st, p, a := setup(t)
+func TestAnnouncesTodayOnly(t *testing.T) {
+	st, p, a := setup(t) // frozen today = 2026-07-03
 	add(t, st, "Today", date(2026, 7, 3))
-	add(t, st, "WithinLookback", date(2026, 7, 1))
-	add(t, st, "TooOld", date(2026, 6, 20))
+	add(t, st, "Yesterday", date(2026, 7, 2))
+	add(t, st, "DaysAgo", date(2026, 6, 30))
 	add(t, st, "Future", date(2026, 7, 10))
 
 	n, err := a.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
-		t.Fatalf("want 2 announced, got %d (%v)", n, p.posted)
+	// Only today's release — never yesterday's or a backfilled backlog.
+	if n != 1 {
+		t.Fatalf("want 1 announced, got %d (%v)", n, p.posted)
 	}
-	if len(p.posted) != 2 || p.posted[0] != "WithinLookback" || p.posted[1] != "Today" {
-		t.Fatalf("posted wrong set/order: %v", p.posted)
+	if len(p.posted) != 1 || p.posted[0] != "Today" {
+		t.Fatalf("posted wrong set: %v", p.posted)
 	}
 }
 
