@@ -84,9 +84,13 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	b.log.Info("command", "name", name)
 
 	// Everything is answered via deferred response so slow paths
-	// (scrape) and fast paths share one shape.
+	// (scrape) and fast paths share one shape. Replies are ephemeral —
+	// only release announcements belong in the channel for everyone.
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+		},
 	}); err != nil {
 		b.log.Error("defer failed", "cmd", name, "err", err)
 		return
@@ -113,6 +117,7 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 
 	if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 		Content: reply,
+		Flags:   discordgo.MessageFlagsEphemeral,
 	}); err != nil {
 		b.log.Error("followup failed", "cmd", name, "err", err)
 	}
