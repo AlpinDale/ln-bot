@@ -32,7 +32,8 @@ type Bot struct {
 	rootCtx  context.Context        // background scrapes run under this
 	log      *slog.Logger
 
-	scraping atomic.Bool // guards against overlapping /scrape runs
+	scraping  atomic.Bool // guards against overlapping /scrape runs
+	archiving atomic.Bool // guards against overlapping /archive runs
 }
 
 // New builds the Bot (does not connect yet). rootCtx bounds background

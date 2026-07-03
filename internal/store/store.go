@@ -153,6 +153,14 @@ func (s *Store) UnalertedInWindow(ctx context.Context, from, to time.Time) ([]mo
 		model.DateOnly(from).Format(dateLayout), model.DateOnly(to).Format(dateLayout))
 }
 
+// UnpostedReleases returns every release not yet posted to the channel
+// (alerted_at IS NULL), in chronological release order — the backlog the
+// archive command drains.
+func (s *Store) UnpostedReleases(ctx context.Context) ([]model.Release, error) {
+	return s.queryReleases(ctx,
+		`WHERE alerted_at IS NULL ORDER BY release_date, publisher, volume_title`)
+}
+
 // MarkAlerted stamps a release as announced.
 func (s *Store) MarkAlerted(ctx context.Context, id int64, when time.Time) error {
 	_, err := s.db.ExecContext(ctx,

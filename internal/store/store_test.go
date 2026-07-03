@@ -178,6 +178,49 @@ func TestPublisherFilter(t *testing.T) {
 	}
 }
 
+func TestUnpostedReleasesOrderedAndFiltered(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	add := func(title string, d time.Time) int64 {
+		r := rel(title, d)
+		r.VolumeTitle = title
+		if _, err := s.UpsertRelease(ctx, r, now); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := s.ReleasesBetween(ctx, date(2000, 1, 1), date(2100, 1, 1), "")
+		for _, x := range got {
+			if x.VolumeTitle == title {
+				return x.ID
+			}
+		}
+		t.Fatalf("inserted %q not found", title)
+		return 0
+	}
+
+	add("Charlie", date(2024, 3, 1))
+	add("Alpha", date(2022, 1, 1))
+	bravoID := add("Bravo", date(2023, 2, 1))
+
+	// Mark the middle one posted; it must drop out of the backlog.
+	if err := s.MarkAlerted(ctx, bravoID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.UnpostedReleases(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 unposted, got %d", len(got))
+	}
+	// Chronological by release_date.
+	if got[0].VolumeTitle != "Alpha" || got[1].VolumeTitle != "Charlie" {
+		t.Fatalf("wrong order: %s, %s", got[0].VolumeTitle, got[1].VolumeTitle)
+	}
+}
+
 func TestScrapeRunHistory(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

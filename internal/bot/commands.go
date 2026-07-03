@@ -58,6 +58,10 @@ func (b *Bot) commandDefinitions() []*discordgo.ApplicationCommand {
 			Name:        "scrape",
 			Description: "Admin: full-catalog scrape + announce pass (slow)",
 		},
+		{
+			Name:        "archive",
+			Description: "Admin: post the full release history to this channel (slow)",
+		},
 	}
 }
 
@@ -123,6 +127,8 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 		reply = b.cmdSources(ctx)
 	case "scrape":
 		reply = b.cmdScrape(ctx, i)
+	case "archive":
+		reply = b.cmdArchive(ctx, i)
 	default:
 		reply = "Unknown command."
 	}
@@ -288,6 +294,66 @@ func (b *Bot) cmdScrape(_ context.Context, i *discordgo.InteractionCreate) strin
 	}()
 
 	return "🔄 Full scrape started — this can take a while. I'll post a summary here when it's done."
+}
+
+// archiveDelay paces archive posts just over Discord's ~5-per-5s
+// per-channel message limit, so we never trigger 429s (a flood of which
+// can escalate to a Cloudflare-level block).
+const archiveDelay = 1100 * time.Millisecond
+
+// cmdArchive backfills the whole release history into the alert channel
+// in date order, one message per release. It reuses alerted_at as the
+// "already posted" marker, so it shares state with the daily alerts and
+// never double-posts. Long-running and fire-and-forget, like /scrape.
+func (b *Bot) cmdArchive(ctx context.Context, i *discordgo.InteractionCreate) string {
+	if !b.isAdmin(i) {
+		return "You're not allowed to run `/archive`."
+	}
+	if !b.archiving.CompareAndSwap(false, true) {
+		return "An archive run is already in progress."
+	}
+
+	pending, err := b.store.UnpostedReleases(ctx)
+	if err != nil {
+		b.archiving.Store(false)
+		b.log.Error("archive query failed", "err", err)
+		return "Couldn't read the backlog — check the logs."
+	}
+	if len(pending) == 0 {
+		b.archiving.Store(false)
+		return "Nothing to archive — every release has already been posted here."
+	}
+
+	go func() {
+		defer b.archiving.Store(false)
+		b.log.Info("archive started", "count", len(pending))
+		posted := 0
+		for _, r := range pending {
+			select {
+			case <-b.rootCtx.Done():
+				b.log.Info("archive interrupted", "posted", posted, "total", len(pending))
+				return
+			case <-time.After(archiveDelay):
+			}
+			if err := b.PostRelease(b.rootCtx, r); err != nil {
+				b.log.Error("archive post failed", "title", r.VolumeTitle, "err", err)
+				continue // leave unposted so a re-run retries it
+			}
+			if err := b.store.MarkAlerted(b.rootCtx, r.ID, time.Now()); err != nil {
+				b.log.Error("archive mark failed", "id", r.ID, "err", err)
+			}
+			posted++
+		}
+		b.log.Info("archive finished", "posted", posted, "total", len(pending))
+		if _, err := b.session.ChannelMessageSend(b.cfg.Discord.AlertChannelID,
+			fmt.Sprintf("📚 Archive complete — posted %d release(s) in date order.", posted)); err != nil {
+			b.log.Error("archive summary post failed", "err", err)
+		}
+	}()
+
+	etaMin := max((len(pending)*int(archiveDelay/time.Millisecond)/1000+59)/60, 1)
+	return fmt.Sprintf("📚 Archiving %d release(s) to this channel in date order — about ~%d min "+
+		"(paced under Discord's rate limit). I'll post a marker when it's done.", len(pending), etaMin)
 }
 
 // --- pagination ---
