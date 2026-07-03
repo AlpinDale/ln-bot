@@ -235,9 +235,10 @@ const (
 // doCFScan fetches a URL via the Cloudflare URL Scanner: it creates a
 // scan (Cloudflare renders the page from its own infrastructure, running
 // any JS anti-bot challenge), polls until the scan completes, then
-// returns the Chrome-rendered DOM of the main page. Using the DOM
-// endpoint (rather than picking a captured response body) guarantees we
-// get the main document and not some sub-resource.
+// returns the *largest* captured text/html response — the main page. An
+// anti-bot flow captures several small HTML stubs (challenge/redirect
+// pages) plus the real document; the real page dwarfs the stubs, so
+// "largest HTML" reliably selects it where position-based picks fail.
 func (c *Client) doCFScan(ctx context.Context, targetURL string) ([]byte, bool, error) {
 	uuid, retryable, err := c.cfCreateScan(ctx, targetURL)
 	if err != nil {
@@ -250,25 +251,20 @@ func (c *Client) doCFScan(ctx context.Context, targetURL string) ([]byte, bool, 
 		case <-ctx.Done():
 			return nil, false, ctx.Err()
 		}
-		hash, hashes, done, err := c.cfPollResult(ctx, uuid)
+		htmlHashes, allHashes, done, err := c.cfPollResult(ctx, uuid)
 		if err != nil {
 			return nil, true, fmt.Errorf("cfscan %s: %w", targetURL, err)
 		}
 		if !done {
 			continue
 		}
-		// Primary: the response data.requests identifies as the main
-		// text/html document. Trust it when the fetch succeeds.
-		if hash != "" {
-			if body, _, ferr := c.cfFetchResponse(ctx, targetURL, hash); ferr == nil {
-				return body, false, nil
-			}
-			// fall through to the scan below on a fetch error.
+		// Prefer the text/html responses named in data.requests (few);
+		// fall back to the full hash list if schema parsing found none.
+		candidates := htmlHashes
+		if len(candidates) == 0 {
+			candidates = allHashes
 		}
-		// Fallback: scan captured responses for the main HTML document.
-		// Robust to result-schema drift and to the primary hash being a
-		// tiny non-document response.
-		if body, ok := c.cfScanForHTML(ctx, hashes); ok {
+		if body, ok := c.cfLargestHTML(ctx, candidates); ok {
 			return body, false, nil
 		}
 		return nil, true, fmt.Errorf("cfscan %s: no HTML document in scan", targetURL)
@@ -325,7 +321,7 @@ func (c *Client) cfCreateScan(ctx context.Context, targetURL string) (uuid strin
 // cfSearchRecent finds the most recent existing scan for a URL (used when
 // creation 409s due to Cloudflare's dedup window).
 func (c *Client) cfSearchRecent(ctx context.Context, targetURL string) (string, bool, error) {
-	q := url.Values{"url": {targetURL}, "size": {"1"}}
+	q := url.Values{"q": {fmt.Sprintf(`page.url:%q`, targetURL)}, "size": {"5"}}
 	status, body, err := c.cfDo(ctx, http.MethodGet, c.cfAPI+"/search?"+q.Encode(), nil)
 	if err != nil {
 		return "", true, fmt.Errorf("cfscan search %s: %w", targetURL, err)
@@ -333,15 +329,18 @@ func (c *Client) cfSearchRecent(ctx context.Context, targetURL string) (string, 
 	if status != http.StatusOK {
 		return "", true, fmt.Errorf("cfscan search %s: status %d", targetURL, status)
 	}
+	// Results carry the scan uuid under task.uuid, newest first.
 	var r struct {
-		Tasks []struct {
-			UUID string `json:"uuid"`
-		} `json:"tasks"`
+		Results []struct {
+			Task struct {
+				UUID string `json:"uuid"`
+			} `json:"task"`
+		} `json:"results"`
 	}
-	if err := json.Unmarshal(body, &r); err != nil || len(r.Tasks) == 0 {
+	if err := json.Unmarshal(body, &r); err != nil || len(r.Results) == 0 || r.Results[0].Task.UUID == "" {
 		return "", true, fmt.Errorf("cfscan search %s: no prior scan", targetURL)
 	}
-	return r.Tasks[0].UUID, false, nil
+	return r.Results[0].Task.UUID, false, nil
 }
 
 // cfPollResult checks a scan. done is false while it's still processing
@@ -350,16 +349,16 @@ func (c *Client) cfSearchRecent(ctx context.Context, targetURL string) (string, 
 // response, which is the top-level navigation (sub-resources are JS/CSS/
 // images). This is reliable where lists.hashes[0] is not, because
 // data.requests is ordered by the browser's request sequence.
-func (c *Client) cfPollResult(ctx context.Context, uuid string) (htmlHash string, allHashes []string, done bool, err error) {
+func (c *Client) cfPollResult(ctx context.Context, uuid string) (htmlHashes, allHashes []string, done bool, err error) {
 	status, body, err := c.cfDo(ctx, http.MethodGet, c.cfAPI+"/result/"+uuid, nil)
 	if err != nil {
-		return "", nil, false, err
+		return nil, nil, false, err
 	}
 	if status == http.StatusNotFound {
-		return "", nil, false, nil // still processing
+		return nil, nil, false, nil // still processing
 	}
 	if status != http.StatusOK {
-		return "", nil, false, fmt.Errorf("result status %d: %s", status, truncate(body))
+		return nil, nil, false, fmt.Errorf("result status %d: %s", status, truncate(body))
 	}
 	var r struct {
 		Task struct {
@@ -380,37 +379,28 @@ func (c *Client) cfPollResult(ctx context.Context, uuid string) (htmlHash string
 		} `json:"lists"`
 	}
 	if err := json.Unmarshal(body, &r); err != nil {
-		return "", nil, false, fmt.Errorf("decode result: %w", err)
+		return nil, nil, false, fmt.Errorf("decode result: %w", err)
 	}
 	if !r.Task.Success {
-		return "", nil, false, fmt.Errorf("scan reported failure")
+		return nil, nil, false, fmt.Errorf("scan reported failure")
 	}
-	// The first text/html response is the top-level document.
+	seen := map[string]bool{}
 	for _, req := range r.Data.Requests {
-		if req.Response.Hash != "" && strings.Contains(req.Response.Response.MimeType, "html") {
-			htmlHash = req.Response.Hash
-			break
+		h := req.Response.Hash
+		if h != "" && !seen[h] && strings.Contains(req.Response.Response.MimeType, "html") {
+			seen[h] = true
+			htmlHashes = append(htmlHashes, h)
 		}
 	}
-	return htmlHash, r.Lists.Hashes, true, nil
+	return htmlHashes, r.Lists.Hashes, true, nil
 }
 
-func (c *Client) cfFetchResponse(ctx context.Context, targetURL, hash string) ([]byte, bool, error) {
-	status, body, err := c.cfDo(ctx, http.MethodGet, c.cfAPI+"/responses/"+hash, nil)
-	if err != nil {
-		return nil, true, fmt.Errorf("cfscan body %s: %w", targetURL, err)
-	}
-	if status != http.StatusOK {
-		return nil, true, fmt.Errorf("cfscan body %s: status %d", targetURL, status)
-	}
-	return body, false, nil
-}
-
-// cfScanForHTML fetches captured response bodies (bounded) and returns
-// the first that looks like a full HTML document — the fallback when the
-// structured main-document hash is unavailable.
-func (c *Client) cfScanForHTML(ctx context.Context, hashes []string) ([]byte, bool) {
-	const maxTry = 12
+// cfLargestHTML fetches candidate response bodies (bounded) and returns
+// the largest that looks like a full HTML document — the main page,
+// distinguished from small challenge/redirect HTML stubs by size.
+func (c *Client) cfLargestHTML(ctx context.Context, hashes []string) ([]byte, bool) {
+	const maxTry = 40
+	var best []byte
 	for i, h := range hashes {
 		if i >= maxTry {
 			break
@@ -419,11 +409,11 @@ func (c *Client) cfScanForHTML(ctx context.Context, hashes []string) ([]byte, bo
 		if err != nil || status != http.StatusOK {
 			continue
 		}
-		if looksLikeHTMLDoc(body) {
-			return body, true
+		if looksLikeHTMLDoc(body) && len(body) > len(best) {
+			best = body
 		}
 	}
-	return nil, false
+	return best, len(best) > 0
 }
 
 // looksLikeHTMLDoc reports whether body is a substantial HTML document

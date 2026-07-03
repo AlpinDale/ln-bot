@@ -10,10 +10,32 @@ import (
 	"time"
 )
 
+// bigHTML is a >2KB HTML document (passes looksLikeHTMLDoc); the marker
+// lets tests assert the right body was returned.
+func bigHTML(marker string) string {
+	return "<!doctype html><html><body>" + marker + strings.Repeat("x", 3000) + "</body></html>"
+}
+
+// resultJSON builds a scan result with the given text/html response
+// hashes under data.requests and the same under lists.hashes.
+func resultJSON(htmlHashes ...string) string {
+	var reqs []string
+	for _, h := range htmlHashes {
+		reqs = append(reqs, fmt.Sprintf(`{"response":{"hash":%q,"response":{"mimeType":"text/html"}}}`, h))
+	}
+	var lists []string
+	for _, h := range htmlHashes {
+		lists = append(lists, fmt.Sprintf("%q", h))
+	}
+	return fmt.Sprintf(`{"task":{"success":true},"data":{"requests":[%s]},"lists":{"hashes":[%s]}}`,
+		strings.Join(reqs, ","), strings.Join(lists, ","))
+}
+
 // A CF-scanner host routes through the URL Scanner API: create scan →
-// poll result → fetch the main HTML document's captured response.
+// poll result → return the largest captured text/html document.
 func TestCFScannerRouting(t *testing.T) {
-	const wantBody = "<html>SEVEN SEAS RELEASE TABLE</html>"
+	stub := bigHTML("STUB")   // small-ish decoy
+	page := bigHTML("REALPAGE") + strings.Repeat("y", 5000) // larger = the real page
 	var created bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -27,9 +49,11 @@ func TestCFScannerRouting(t *testing.T) {
 			if !created {
 				t.Error("polled result before creating scan")
 			}
-			fmt.Fprint(w, `{"task":{"success":true},"data":{"requests":[{"response":{"hash":"MAINHASH","response":{"mimeType":"text/html"}}}]}}`)
-		case strings.HasSuffix(r.URL.Path, "/responses/MAINHASH"):
-			fmt.Fprint(w, wantBody)
+			fmt.Fprint(w, resultJSON("hstub", "hpage"))
+		case strings.HasSuffix(r.URL.Path, "/responses/hstub"):
+			fmt.Fprint(w, stub)
+		case strings.HasSuffix(r.URL.Path, "/responses/hpage"):
+			fmt.Fprint(w, page)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -42,14 +66,15 @@ func TestCFScannerRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != wantBody {
-		t.Fatalf("unexpected body: %q", body)
+	// Largest HTML wins — the real page, not the smaller stub.
+	if !strings.Contains(string(body), "REALPAGE") {
+		t.Fatalf("did not pick the largest HTML doc (%d bytes)", len(body))
 	}
 }
 
-// The result endpoint 404s until the scan finishes; the client must keep
-// polling rather than error out.
+// The result endpoint 404s until the scan finishes; keep polling.
 func TestCFScannerPollsUntilReady(t *testing.T) {
+	page := bigHTML("READY")
 	var polls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -61,9 +86,9 @@ func TestCFScannerPollsUntilReady(t *testing.T) {
 				http.NotFound(w, r) // still processing
 				return
 			}
-			fmt.Fprint(w, `{"task":{"success":true},"data":{"requests":[{"response":{"hash":"MAINHASH","response":{"mimeType":"text/html"}}}]}}`)
-		case strings.HasSuffix(r.URL.Path, "/responses/MAINHASH"):
-			fmt.Fprint(w, "ready")
+			fmt.Fprint(w, resultJSON("h"))
+		case strings.HasSuffix(r.URL.Path, "/responses/h"):
+			fmt.Fprint(w, page)
 		}
 	}))
 	defer srv.Close()
@@ -73,24 +98,25 @@ func TestCFScannerPollsUntilReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "ready" || polls != 3 {
-		t.Fatalf("body=%q polls=%d", body, polls)
+	if !strings.Contains(string(body), "READY") || polls != 3 {
+		t.Fatalf("body-has-READY=%v polls=%d", strings.Contains(string(body), "READY"), polls)
 	}
 }
 
 // A 409 on create falls back to searching for the most recent scan.
 func TestCFScannerConflictUsesSearch(t *testing.T) {
+	page := bigHTML("FROMSEARCH")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/scan"):
 			w.WriteHeader(http.StatusConflict)
 			fmt.Fprint(w, `{"errors":[{"code":409}]}`)
 		case strings.HasSuffix(r.URL.Path, "/search"):
-			fmt.Fprint(w, `{"tasks":[{"uuid":"recent"}]}`)
+			fmt.Fprint(w, `{"results":[{"task":{"uuid":"recent"}}]}`)
 		case strings.HasSuffix(r.URL.Path, "/result/recent"):
-			fmt.Fprint(w, `{"task":{"success":true},"data":{"requests":[{"response":{"hash":"MAINHASH","response":{"mimeType":"text/html"}}}]}}`)
-		case strings.HasSuffix(r.URL.Path, "/responses/MAINHASH"):
-			fmt.Fprint(w, "from-search")
+			fmt.Fprint(w, resultJSON("h"))
+		case strings.HasSuffix(r.URL.Path, "/responses/h"):
+			fmt.Fprint(w, page)
 		}
 	}))
 	defer srv.Close()
@@ -100,26 +126,26 @@ func TestCFScannerConflictUsesSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "from-search" {
-		t.Fatalf("body=%q", body)
+	if !strings.Contains(string(body), "FROMSEARCH") {
+		t.Fatalf("wrong body: %q", body[:min(40, len(body))])
 	}
 }
 
-// When the result has no structured HTML hash (schema drift), the client
-// falls back to scanning captured response bodies for the real document.
+// When data.requests has no HTML entries (schema drift), fall back to
+// scanning the full hash list for the main document.
 func TestCFScannerFallbackScansHashes(t *testing.T) {
-	bigDoc := "<!doctype html><html><body>" + strings.Repeat("x", 4000) + "</body></html>"
+	page := bigHTML("FALLBACK")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/scan"):
 			fmt.Fprint(w, `{"uuid":"u"}`)
 		case strings.HasSuffix(r.URL.Path, "/result/u"):
-			// No data.requests html; only a hash list to scan.
+			// No data.requests; only a bare hash list to scan.
 			fmt.Fprint(w, `{"task":{"success":true},"lists":{"hashes":["tiny","doc"]}}`)
 		case strings.HasSuffix(r.URL.Path, "/responses/tiny"):
 			fmt.Fprint(w, "<html>too small</html>") // < 2KB, skipped
 		case strings.HasSuffix(r.URL.Path, "/responses/doc"):
-			fmt.Fprint(w, bigDoc)
+			fmt.Fprint(w, page)
 		}
 	}))
 	defer srv.Close()
@@ -129,7 +155,7 @@ func TestCFScannerFallbackScansHashes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != bigDoc {
+	if !strings.Contains(string(body), "FALLBACK") {
 		t.Fatalf("fallback picked wrong body (%d bytes)", len(body))
 	}
 }
@@ -151,9 +177,6 @@ func TestCFScannerOnlyForListedHosts(t *testing.T) {
 	}
 }
 
-// newCFTestClient builds a client whose CF API base points at srv and
-// which routes sevenseasentertainment.com through it. It reaches into the
-// unexported cfAPI field to redirect the base URL at the test server.
 func newCFTestClient(apiBase string) *Client {
 	c := New(Options{
 		MinDelay:         time.Millisecond,
@@ -167,4 +190,3 @@ func newCFTestClient(apiBase string) *Client {
 	c.cfPollWait = time.Millisecond // fast polling for tests
 	return c
 }
-
