@@ -60,8 +60,16 @@ func (b *Bot) commandDefinitions() []*discordgo.ApplicationCommand {
 }
 
 func (b *Bot) registerCommands() error {
+	appID := b.session.State.User.ID
+	// Clear GLOBAL commands: ours are guild-scoped, so anything global
+	// is stale (e.g. left over from a repurposed application ID).
+	// Removals can take up to an hour to disappear from clients.
+	if _, err := b.session.ApplicationCommandBulkOverwrite(appID, "",
+		[]*discordgo.ApplicationCommand{}); err != nil {
+		return fmt.Errorf("clear global commands: %w", err)
+	}
 	_, err := b.session.ApplicationCommandBulkOverwrite(
-		b.session.State.User.ID, b.cfg.Discord.GuildID, b.commandDefinitions())
+		appID, b.cfg.Discord.GuildID, b.commandDefinitions())
 	if err != nil {
 		return fmt.Errorf("register commands: %w", err)
 	}
