@@ -6,4 +6,5 @@ package all
 import (
 	_ "github.com/alpindale/ln-bot/internal/source/crossinfinite"
 	_ "github.com/alpindale/ln-bot/internal/source/jnovelclub"
+	_ "github.com/alpindale/ln-bot/internal/source/yenpress"
 )

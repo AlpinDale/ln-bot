@@ -376,7 +376,7 @@ func paginateReleases(releases []model.Release) [][]string {
 			title = fmt.Sprintf("[%s](<%s>)", r.VolumeTitle, r.URL)
 		}
 		line := fmt.Sprintf("- `%s` %s — %s (%s)\n",
-			r.ReleaseDate.Format(dateLayout), title, r.Publisher, r.Format)
+			r.ReleaseDate.Format(dateLayout), title, r.Publisher, DisplayFormat(r.Format))
 		if len(cur) > 0 && (curLen+len(line) > pageCharBudget || len(cur) >= pageMaxLines) {
 			pages = append(pages, cur)
 			cur, curLen = nil, 0

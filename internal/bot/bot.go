@@ -77,7 +77,7 @@ func (b *Bot) PostRelease(_ context.Context, r model.Release) error {
 		Color:       0x57F287, // green
 		Fields: []*discordgo.MessageEmbedField{
 			{Name: "Series", Value: orDash(r.SeriesTitle), Inline: true},
-			{Name: "Format", Value: r.Format, Inline: true},
+			{Name: "Format", Value: DisplayFormat(r.Format), Inline: true},
 			{Name: "Release date", Value: r.ReleaseDate.Format("2006-01-02"), Inline: true},
 		},
 		Footer: &discordgo.MessageEmbedFooter{Text: "source: " + r.SourceKey},
@@ -94,6 +94,15 @@ func orDash(s string) string {
 		return "—"
 	}
 	return s
+}
+
+// DisplayFormat renders a release format for humans; "unknown" (e.g.
+// Yen Press, whose calendar doesn't split editions) shows as a dash.
+func DisplayFormat(f string) string {
+	if f == "" || f == model.FormatUnknown {
+		return "—"
+	}
+	return f
 }
 
 // isAdmin reports whether the interaction invoker matches admin_ids by

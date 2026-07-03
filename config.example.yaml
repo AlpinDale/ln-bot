@@ -36,3 +36,5 @@ sources:
     enabled: true
   crossinfinite:
     enabled: true
+  yenpress:
+    enabled: true
