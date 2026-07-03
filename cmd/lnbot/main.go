@@ -61,8 +61,8 @@ func run() error {
 	// The announcer's poster is the bot; break the construction cycle by
 	// declaring the pipeline first as a closure over late-bound vars.
 	var ann *announcer.Announcer
-	pipeline := func(ctx context.Context) (string, error) {
-		res, err := scr.RunAll(ctx)
+	pipeline := func(ctx context.Context, mode source.Mode) (string, error) {
+		res, err := scr.RunAll(ctx, mode)
 		if err != nil {
 			return "", err
 		}
@@ -91,7 +91,7 @@ func run() error {
 	_, err = c.AddFunc(cfg.Schedule.Cron, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		summary, err := pipeline(ctx)
+		summary, err := pipeline(ctx, source.ModeIncremental)
 		if err != nil {
 			log.Error("scheduled run failed", "err", err)
 			return

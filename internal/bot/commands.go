@@ -9,6 +9,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/alpindale/ln-bot/internal/model"
+	"github.com/alpindale/ln-bot/internal/source"
 )
 
 const dateLayout = "2006-01-02"
@@ -54,7 +55,7 @@ func (b *Bot) commandDefinitions() []*discordgo.ApplicationCommand {
 		},
 		{
 			Name:        "scrape",
-			Description: "Admin: run a scrape + announce pass now",
+			Description: "Admin: full-catalog scrape + announce pass (slow)",
 		},
 	}
 }
@@ -226,7 +227,7 @@ func (b *Bot) cmdScrape(ctx context.Context, i *discordgo.InteractionCreate) str
 	if !b.isAdmin(i) {
 		return "You're not allowed to run `/scrape`."
 	}
-	summary, err := b.pipeline(ctx)
+	summary, err := b.pipeline(ctx, source.ModeFull)
 	if err != nil {
 		return "Scrape failed: " + err.Error()
 	}

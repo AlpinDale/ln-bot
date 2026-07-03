@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alpindale/ln-bot/internal/model"
+	"github.com/alpindale/ln-bot/internal/source"
 	"github.com/alpindale/ln-bot/internal/source/fetch"
 )
 
@@ -38,7 +39,7 @@ func TestFetchFiltersToNovelEbookReleases(t *testing.T) {
 	defer srv.Close()
 
 	src := &jnc{baseURL: srv.URL}
-	got, err := src.Fetch(context.Background(), testClient())
+	got, err := src.Fetch(context.Background(), testClient(), source.ModeIncremental)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +77,28 @@ func TestFetchFiltersToNovelEbookReleases(t *testing.T) {
 	}
 }
 
+func TestFullModeCoversCatalog(t *testing.T) {
+	var gotStart, gotEnd string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotStart = r.URL.Query().Get("start_date")
+		gotEnd = r.URL.Query().Get("end_date")
+		fmt.Fprint(w, `{"events":[],"pagination":{"lastPage":true}}`)
+	}))
+	defer srv.Close()
+
+	src := &jnc{baseURL: srv.URL}
+	if _, err := src.Fetch(context.Background(), testClient(), source.ModeFull); err != nil {
+		t.Fatal(err)
+	}
+	if gotStart != fullStart {
+		t.Errorf("full-mode start_date = %q, want %q", gotStart, fullStart)
+	}
+	wantEndYear := time.Now().UTC().AddDate(fullForwardYears, 0, 0).Format("2006")
+	if len(gotEnd) < 4 || gotEnd[:4] != wantEndYear {
+		t.Errorf("full-mode end_date = %q, want year %s", gotEnd, wantEndYear)
+	}
+}
+
 func TestFetchPaginates(t *testing.T) {
 	page := func(names []string, last bool) string {
 		evs := ""
@@ -110,7 +133,7 @@ func TestFetchPaginates(t *testing.T) {
 	defer srv.Close()
 
 	src := &jnc{baseURL: srv.URL}
-	got, err := src.Fetch(context.Background(), testClient())
+	got, err := src.Fetch(context.Background(), testClient(), source.ModeIncremental)
 	if err != nil {
 		t.Fatal(err)
 	}

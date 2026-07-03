@@ -22,13 +22,18 @@ const (
 	defaultBaseURL = "https://labs.j-novel.club"
 	siteURL        = "https://j-novel.club"
 
-	// How far around "now" to ask the events API for.
+	// Incremental mode: how far around "now" to ask the events API for.
 	windowBack    = 7 * 24 * time.Hour
 	windowForward = 90 * 24 * time.Hour
 
+	// Full mode: entire catalog. J-Novel Club launched in late 2016.
+	fullStart        = "2016-01-01T00:00:00Z"
+	fullForwardYears = 2
+
 	pageLimit = 200
-	// Safety cap on pagination; the window above fits comfortably.
-	maxPages = 10
+	// Safety caps on pagination per mode.
+	maxPagesIncremental = 10
+	maxPagesFull        = 400
 )
 
 func init() {
@@ -67,10 +72,16 @@ type eventsResponse struct {
 	} `json:"pagination"`
 }
 
-func (j *jnc) Fetch(ctx context.Context, c *fetch.Client) ([]model.Release, error) {
+func (j *jnc) Fetch(ctx context.Context, c *fetch.Client, mode source.Mode) ([]model.Release, error) {
 	now := time.Now().UTC()
 	start := now.Add(-windowBack).Format(time.RFC3339)
 	end := now.Add(windowForward).Format(time.RFC3339)
+	maxPages := maxPagesIncremental
+	if mode == source.ModeFull {
+		start = fullStart
+		end = now.AddDate(fullForwardYears, 0, 0).Format(time.RFC3339)
+		maxPages = maxPagesFull
+	}
 
 	var out []model.Release
 	for page := 0; page < maxPages; page++ {

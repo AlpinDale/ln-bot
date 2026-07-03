@@ -18,7 +18,7 @@ import (
 
 // PipelineFunc runs scrape + announce on demand (backs /scrape). It
 // returns a human-readable summary.
-type PipelineFunc func(ctx context.Context) (string, error)
+type PipelineFunc func(ctx context.Context, mode source.Mode) (string, error)
 
 // Bot is the Discord layer.
 type Bot struct {

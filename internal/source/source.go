@@ -19,9 +19,21 @@ import (
 	"github.com/alpindale/ln-bot/internal/source/fetch"
 )
 
+// Mode selects how much of a source's catalog a Fetch should cover.
+type Mode int
+
+const (
+	// ModeIncremental covers the near-term window (recent past through
+	// the upcoming calendar). Used by the daily scheduled scrape.
+	ModeIncremental Mode = iota
+	// ModeFull covers the source's entire catalog, past and future.
+	// Used by the manual /scrape command (backfill, slip correction).
+	ModeFull
+)
+
 // Source is a single publisher/site scraped for release data.
 //
-// Fetch returns every known upcoming (and recent, where cheap) release.
+// Fetch returns the releases the publisher lists for the given mode.
 // It must use the provided fetch.Client for all HTTP so politeness is
 // centrally enforced, and must honor ctx cancellation. Idempotency and
 // deduplication are handled downstream — plugins just report what the
@@ -31,8 +43,8 @@ type Source interface {
 	Name() string
 	// Publisher is the human-readable name, e.g. "J-Novel Club".
 	Publisher() string
-	// Fetch retrieves the currently listed releases.
-	Fetch(ctx context.Context, c *fetch.Client) ([]model.Release, error)
+	// Fetch retrieves the currently listed releases for mode.
+	Fetch(ctx context.Context, c *fetch.Client, mode Mode) ([]model.Release, error)
 }
 
 var (

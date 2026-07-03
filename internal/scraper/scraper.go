@@ -38,9 +38,10 @@ func New(st *store.Store, client *fetch.Client, sources func() []source.Source, 
 	return &Scraper{store: st, client: client, sources: sources, log: log}
 }
 
-// RunAll fetches every enabled source. Per-source failures are logged
-// and recorded but do not abort the pass. Concurrent calls serialize.
-func (s *Scraper) RunAll(ctx context.Context) (Result, error) {
+// RunAll fetches every enabled source in the given mode. Per-source
+// failures are logged and recorded but do not abort the pass.
+// Concurrent calls serialize.
+func (s *Scraper) RunAll(ctx context.Context, mode source.Mode) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -51,7 +52,7 @@ func (s *Scraper) RunAll(ctx context.Context) (Result, error) {
 		}
 		res.Sources++
 		run := store.ScrapeRun{SourceKey: src.Name(), StartedAt: time.Now()}
-		releases, err := src.Fetch(ctx, s.client)
+		releases, err := src.Fetch(ctx, s.client, mode)
 		run.FinishedAt = time.Now()
 
 		if err != nil {
