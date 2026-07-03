@@ -235,7 +235,9 @@ const (
 // doCFScan fetches a URL via the Cloudflare URL Scanner: it creates a
 // scan (Cloudflare renders the page from its own infrastructure, running
 // any JS anti-bot challenge), polls until the scan completes, then
-// returns the captured main-document HTML.
+// returns the Chrome-rendered DOM of the main page. Using the DOM
+// endpoint (rather than picking a captured response body) guarantees we
+// get the main document and not some sub-resource.
 func (c *Client) doCFScan(ctx context.Context, targetURL string) ([]byte, bool, error) {
 	uuid, retryable, err := c.cfCreateScan(ctx, targetURL)
 	if err != nil {
@@ -248,17 +250,14 @@ func (c *Client) doCFScan(ctx context.Context, targetURL string) ([]byte, bool, 
 		case <-ctx.Done():
 			return nil, false, ctx.Err()
 		}
-		hash, done, err := c.cfPollResult(ctx, uuid)
+		done, err := c.cfPollResult(ctx, uuid)
 		if err != nil {
 			return nil, true, fmt.Errorf("cfscan %s: %w", targetURL, err)
 		}
 		if !done {
 			continue
 		}
-		if hash == "" {
-			return nil, true, fmt.Errorf("cfscan %s: no captured response", targetURL)
-		}
-		return c.cfFetchResponse(ctx, targetURL, hash)
+		return c.cfFetchDOM(ctx, targetURL, uuid)
 	}
 	return nil, true, fmt.Errorf("cfscan %s: scan did not finish in %s",
 		targetURL, time.Duration(cfMaxPolls)*cfPollInterval)
@@ -331,47 +330,41 @@ func (c *Client) cfSearchRecent(ctx context.Context, targetURL string) (string, 
 	return r.Tasks[0].UUID, false, nil
 }
 
-// cfPollResult checks a scan. done is false while it's still processing
-// (the result endpoint 404s until ready); when done, hash is the main
-// document's response-body hash (the first captured response).
-func (c *Client) cfPollResult(ctx context.Context, uuid string) (hash string, done bool, err error) {
+// cfPollResult reports whether a scan has finished. done is false while
+// it's still processing (the result endpoint 404s until ready).
+func (c *Client) cfPollResult(ctx context.Context, uuid string) (done bool, err error) {
 	status, body, err := c.cfDo(ctx, http.MethodGet, c.cfAPI+"/result/"+uuid, nil)
 	if err != nil {
-		return "", false, err
+		return false, err
 	}
 	if status == http.StatusNotFound {
-		return "", false, nil // still processing
+		return false, nil // still processing
 	}
 	if status != http.StatusOK {
-		return "", false, fmt.Errorf("result status %d: %s", status, truncate(body))
+		return false, fmt.Errorf("result status %d: %s", status, truncate(body))
 	}
 	var r struct {
 		Task struct {
 			Success bool `json:"success"`
 		} `json:"task"`
-		Lists struct {
-			Hashes []string `json:"hashes"`
-		} `json:"lists"`
 	}
 	if err := json.Unmarshal(body, &r); err != nil {
-		return "", false, fmt.Errorf("decode result: %w", err)
+		return false, fmt.Errorf("decode result: %w", err)
 	}
 	if !r.Task.Success {
-		return "", false, fmt.Errorf("scan reported failure")
+		return false, fmt.Errorf("scan reported failure")
 	}
-	if len(r.Lists.Hashes) == 0 {
-		return "", true, nil
-	}
-	return r.Lists.Hashes[0], true, nil
+	return true, nil
 }
 
-func (c *Client) cfFetchResponse(ctx context.Context, targetURL, hash string) ([]byte, bool, error) {
-	status, body, err := c.cfDo(ctx, http.MethodGet, c.cfAPI+"/responses/"+hash, nil)
+// cfFetchDOM returns the Chrome-rendered DOM of the scanned page.
+func (c *Client) cfFetchDOM(ctx context.Context, targetURL, uuid string) ([]byte, bool, error) {
+	status, body, err := c.cfDo(ctx, http.MethodGet, c.cfAPI+"/dom/"+uuid, nil)
 	if err != nil {
-		return nil, true, fmt.Errorf("cfscan body %s: %w", targetURL, err)
+		return nil, true, fmt.Errorf("cfscan dom %s: %w", targetURL, err)
 	}
 	if status != http.StatusOK {
-		return nil, true, fmt.Errorf("cfscan body %s: status %d", targetURL, status)
+		return nil, true, fmt.Errorf("cfscan dom %s: status %d", targetURL, status)
 	}
 	return body, false, nil
 }

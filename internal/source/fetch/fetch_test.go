@@ -2,7 +2,6 @@ package fetch
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +11,7 @@ import (
 )
 
 // A CF-scanner host routes through the URL Scanner API: create scan →
-// poll result → fetch the captured main-document body.
+// poll result → fetch the rendered DOM of the main page.
 func TestCFScannerRouting(t *testing.T) {
 	const wantBody = "<html>SEVEN SEAS RELEASE TABLE</html>"
 	var created bool
@@ -28,9 +27,8 @@ func TestCFScannerRouting(t *testing.T) {
 			if !created {
 				t.Error("polled result before creating scan")
 			}
-			// Ready immediately for the test.
-			fmt.Fprint(w, `{"task":{"success":true},"lists":{"hashes":["h0","h1"]}}`)
-		case strings.HasSuffix(r.URL.Path, "/responses/h0"):
+			fmt.Fprint(w, `{"task":{"success":true}}`)
+		case strings.HasSuffix(r.URL.Path, "/dom/abc-123"):
 			fmt.Fprint(w, wantBody)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -63,8 +61,8 @@ func TestCFScannerPollsUntilReady(t *testing.T) {
 				http.NotFound(w, r) // still processing
 				return
 			}
-			fmt.Fprint(w, `{"task":{"success":true},"lists":{"hashes":["hh"]}}`)
-		case strings.HasSuffix(r.URL.Path, "/responses/hh"):
+			fmt.Fprint(w, `{"task":{"success":true}}`)
+		case strings.HasSuffix(r.URL.Path, "/dom/u"):
 			fmt.Fprint(w, "ready")
 		}
 	}))
@@ -90,8 +88,8 @@ func TestCFScannerConflictUsesSearch(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/search"):
 			fmt.Fprint(w, `{"tasks":[{"uuid":"recent"}]}`)
 		case strings.HasSuffix(r.URL.Path, "/result/recent"):
-			fmt.Fprint(w, `{"task":{"success":true},"lists":{"hashes":["x"]}}`)
-		case strings.HasSuffix(r.URL.Path, "/responses/x"):
+			fmt.Fprint(w, `{"task":{"success":true}}`)
+		case strings.HasSuffix(r.URL.Path, "/dom/recent"):
 			fmt.Fprint(w, "from-search")
 		}
 	}))
@@ -141,16 +139,3 @@ func newCFTestClient(apiBase string) *Client {
 	return c
 }
 
-// Ensure the JSON shapes used above stay valid.
-func TestCFResultDecodes(t *testing.T) {
-	var r struct {
-		Task  struct{ Success bool } `json:"task"`
-		Lists struct{ Hashes []string } `json:"lists"`
-	}
-	if err := json.Unmarshal([]byte(`{"task":{"success":true},"lists":{"hashes":["a"]}}`), &r); err != nil {
-		t.Fatal(err)
-	}
-	if !r.Task.Success || r.Lists.Hashes[0] != "a" {
-		t.Fatal("decode mismatch")
-	}
-}
