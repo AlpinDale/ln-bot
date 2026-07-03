@@ -30,6 +30,10 @@ http:
   # Minimum delay between requests to the same source.
   min_delay_ms: 1500
   timeout_seconds: 30
+  # Per-host overrides for robots.txt Crawl-delay compliance
+  # (viz.com's 2s is enforced by default even if omitted here).
+  host_delay_ms:
+    viz.com: 2000
 
 sources:
   jnovelclub:
@@ -39,4 +43,6 @@ sources:
   yenpress:
     enabled: true
   kodansha:
+    enabled: true
+  viz:
     enabled: true

@@ -45,6 +45,9 @@ type HTTP struct {
 	UserAgent      string `yaml:"user_agent"`
 	MinDelayMS     int    `yaml:"min_delay_ms"`
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
+	// HostDelayMS raises the delay for specific hosts (robots.txt
+	// Crawl-delay compliance). Keys are bare hostnames without "www.".
+	HostDelayMS map[string]int `yaml:"host_delay_ms"`
 }
 
 // SourceConfig holds per-source settings. Extra keys are preserved so
@@ -109,6 +112,14 @@ func (c *Config) applyDefaults() {
 	}
 	if c.HTTP.TimeoutSeconds <= 0 {
 		c.HTTP.TimeoutSeconds = 30
+	}
+	if c.HTTP.HostDelayMS == nil {
+		c.HTTP.HostDelayMS = map[string]int{}
+	}
+	// viz.com's robots.txt sets Crawl-delay: 2 — enforce it even when
+	// the config omits it.
+	if c.HTTP.HostDelayMS["viz.com"] < 2000 {
+		c.HTTP.HostDelayMS["viz.com"] = 2000
 	}
 	if c.Sources == nil {
 		c.Sources = map[string]SourceConfig{}

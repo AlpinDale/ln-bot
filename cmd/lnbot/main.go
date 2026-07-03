@@ -51,10 +51,15 @@ func run() error {
 	}
 	defer st.Close()
 
+	hostDelays := map[string]time.Duration{}
+	for host, ms := range cfg.HTTP.HostDelayMS {
+		hostDelays[host] = time.Duration(ms) * time.Millisecond
+	}
 	client := fetch.New(fetch.Options{
-		UserAgent: cfg.HTTP.UserAgent,
-		MinDelay:  time.Duration(cfg.HTTP.MinDelayMS) * time.Millisecond,
-		Timeout:   time.Duration(cfg.HTTP.TimeoutSeconds) * time.Second,
+		UserAgent:  cfg.HTTP.UserAgent,
+		MinDelay:   time.Duration(cfg.HTTP.MinDelayMS) * time.Millisecond,
+		Timeout:    time.Duration(cfg.HTTP.TimeoutSeconds) * time.Second,
+		HostDelays: hostDelays,
 	})
 	enabledSources := func() []source.Source { return source.Enabled(cfg.SourceEnabled) }
 	scr := scraper.New(st, client, enabledSources, log)
