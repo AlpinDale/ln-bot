@@ -68,11 +68,12 @@ type Client struct {
 	browserOnce  sync.Once
 	browserErr   error
 
-	cfAPI      string // "" when URL Scanner is not configured
-	cfToken    string
-	cfHosts    map[string]bool
-	cfClient   *http.Client  // for URL Scanner API calls
-	cfPollWait time.Duration // between result polls (overridable in tests)
+	cfAPI        string // "" when URL Scanner is not configured
+	cfToken      string
+	cfHosts      map[string]bool
+	cfClient     *http.Client  // for URL Scanner API calls
+	cfPollWait   time.Duration // between result polls (overridable in tests)
+	cfRescanWait time.Duration // between fresh-scan retries (overridable in tests)
 
 	mu      sync.Mutex
 	lastReq time.Time
@@ -124,6 +125,7 @@ func New(opts Options) *Client {
 		cfHosts:      cfHosts,
 		cfClient:     &http.Client{Timeout: 30 * time.Second},
 		cfPollWait:   cfPollInterval,
+		cfRescanWait: 20 * time.Second,
 	}
 }
 
@@ -230,47 +232,95 @@ func (c *Client) useCFScanner(rawURL string) bool {
 const (
 	cfPollInterval = 8 * time.Second
 	cfMaxPolls     = 20
+	// A scan sometimes captures the anti-bot challenge screen instead of
+	// the resolved page; retry with fresh scans up to this many times.
+	cfMaxScans = 4
 )
 
-// doCFScan fetches a URL via the Cloudflare URL Scanner: it creates a
-// scan (Cloudflare renders the page from its own infrastructure, running
-// any JS anti-bot challenge), polls until the scan completes, then
-// returns the *largest* captured text/html response — the main page. An
-// anti-bot flow captures several small HTML stubs (challenge/redirect
-// pages) plus the real document; the real page dwarfs the stubs, so
-// "largest HTML" reliably selects it where position-based picks fail.
+// doCFScan fetches a URL via the Cloudflare URL Scanner: Cloudflare
+// renders the page from its own infrastructure, running any JS anti-bot
+// challenge. Because a scan intermittently captures the pre-resolution
+// challenge screen rather than the real document, it retries with fresh
+// scans until it gets a page that isn't an anti-bot challenge.
 func (c *Client) doCFScan(ctx context.Context, targetURL string) ([]byte, bool, error) {
-	uuid, retryable, err := c.cfCreateScan(ctx, targetURL)
-	if err != nil {
-		return nil, retryable, err
+	var lastErr error
+	for attempt := 0; attempt < cfMaxScans; attempt++ {
+		if attempt > 0 {
+			// Wait out Cloudflare's rescan dedup window so a new scan
+			// (with a fresh challenge attempt) is created.
+			select {
+			case <-time.After(c.cfRescanWait):
+			case <-ctx.Done():
+				return nil, false, ctx.Err()
+			}
+		}
+		body, err := c.cfScanOnce(ctx, targetURL)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if looksLikeChallenge(body) {
+			lastErr = fmt.Errorf("cfscan %s: captured anti-bot challenge page", targetURL)
+			continue
+		}
+		return body, false, nil
 	}
+	// Internal fresh-scan retries are exhausted; don't let the outer
+	// Get() retry re-run the whole loop.
+	return nil, false, lastErr
+}
 
+// cfScanOnce runs one scan: create → poll to completion → return the
+// largest captured text/html response (the main page; the anti-bot flow
+// also captures small HTML stubs, which the real page dwarfs).
+func (c *Client) cfScanOnce(ctx context.Context, targetURL string) ([]byte, error) {
+	uuid, _, err := c.cfCreateScan(ctx, targetURL)
+	if err != nil {
+		return nil, err
+	}
 	for poll := 0; poll < cfMaxPolls; poll++ {
 		select {
 		case <-time.After(c.cfPollWait):
 		case <-ctx.Done():
-			return nil, false, ctx.Err()
+			return nil, ctx.Err()
 		}
 		htmlHashes, allHashes, done, err := c.cfPollResult(ctx, uuid)
 		if err != nil {
-			return nil, true, fmt.Errorf("cfscan %s: %w", targetURL, err)
+			return nil, fmt.Errorf("cfscan %s: %w", targetURL, err)
 		}
 		if !done {
 			continue
 		}
-		// Prefer the text/html responses named in data.requests (few);
-		// fall back to the full hash list if schema parsing found none.
 		candidates := htmlHashes
 		if len(candidates) == 0 {
 			candidates = allHashes
 		}
 		if body, ok := c.cfLargestHTML(ctx, candidates); ok {
-			return body, false, nil
+			return body, nil
 		}
-		return nil, true, fmt.Errorf("cfscan %s: no HTML document in scan", targetURL)
+		return nil, fmt.Errorf("cfscan %s: no HTML document in scan", targetURL)
 	}
-	return nil, true, fmt.Errorf("cfscan %s: scan did not finish in %s",
+	return nil, fmt.Errorf("cfscan %s: scan did not finish in %s",
 		targetURL, time.Duration(cfMaxPolls)*cfPollInterval)
+}
+
+// looksLikeChallenge reports whether body is an anti-bot interstitial
+// (SiteGround's "Robot Challenge Screen" / sgcaptcha, or a generic
+// Cloudflare "Just a moment" page) rather than real content.
+func looksLikeChallenge(body []byte) bool {
+	s := strings.ToLower(string(body))
+	if len(s) > 20000 {
+		s = s[:20000] // markers live in the head
+	}
+	for _, m := range []string{
+		"sgcaptcha", "sgchallenge", "robot challenge screen",
+		"/.well-known/captcha", "just a moment", "cf-challenge",
+	} {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) cfDo(ctx context.Context, method, url string, body []byte) (int, []byte, error) {

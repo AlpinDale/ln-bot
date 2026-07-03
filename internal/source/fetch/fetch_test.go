@@ -160,6 +160,43 @@ func TestCFScannerFallbackScansHashes(t *testing.T) {
 	}
 }
 
+// A scan that captures the anti-bot challenge page is retried with a
+// fresh scan until it gets the real document.
+func TestCFScannerRetriesOnChallenge(t *testing.T) {
+	page := bigHTML("REALPAGE")
+	challenge := "<html><head><title>Robot Challenge Screen</title></head>" +
+		"<body>" + strings.Repeat("z", 3000) + " sgcaptcha</body></html>"
+	var scans int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/scan"):
+			scans++
+			fmt.Fprintf(w, `{"uuid":"u%d"}`, scans)
+		case strings.Contains(r.URL.Path, "/result/"):
+			fmt.Fprint(w, resultJSON("h"))
+		case strings.HasSuffix(r.URL.Path, "/responses/h"):
+			if scans < 2 {
+				fmt.Fprint(w, challenge) // first scan: challenge screen
+			} else {
+				fmt.Fprint(w, page) // second scan: real page
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c := newCFTestClient(srv.URL)
+	body, err := c.Get(context.Background(), "https://sevenseasentertainment.com/release-dates/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "REALPAGE") {
+		t.Fatalf("expected real page after retry, got %d bytes", len(body))
+	}
+	if scans < 2 {
+		t.Fatalf("expected a fresh rescan, only %d scan(s)", scans)
+	}
+}
+
 // Non-CF hosts fetch directly even when CF Scanner is configured.
 func TestCFScannerOnlyForListedHosts(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -188,5 +225,6 @@ func newCFTestClient(apiBase string) *Client {
 	})
 	c.cfAPI = apiBase
 	c.cfPollWait = time.Millisecond // fast polling for tests
+	c.cfRescanWait = time.Millisecond
 	return c
 }
