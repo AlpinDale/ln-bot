@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -21,6 +22,9 @@ type Options struct {
 	// MaxRetries is the number of retries after the first attempt for
 	// 429/5xx/network errors.
 	MaxRetries int
+	// Logger, when set, gets one line per request — the scrape
+	// progress report in the logs. Defaults to slog.Default().
+	Logger *slog.Logger
 }
 
 // Client is a rate-limited HTTP client shared by all source plugins.
@@ -29,9 +33,10 @@ type Client struct {
 	userAgent string
 	minDelay  time.Duration
 	retries   int
+	log       *slog.Logger
 
-	mu       sync.Mutex
-	lastReq  time.Time
+	mu      sync.Mutex
+	lastReq time.Time
 }
 
 // New builds a Client from options, applying sane defaults.
@@ -50,11 +55,15 @@ func New(opts Options) *Client {
 	} else if opts.MaxRetries == 0 {
 		opts.MaxRetries = 2
 	}
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
 	return &Client{
 		http:      &http.Client{Timeout: opts.Timeout},
 		userAgent: opts.UserAgent,
 		minDelay:  opts.MinDelay,
 		retries:   opts.MaxRetries,
+		log:       opts.Logger,
 	}
 }
 
@@ -72,10 +81,15 @@ func (c *Client) Get(ctx context.Context, url string) ([]byte, error) {
 				return nil, ctx.Err()
 			}
 		}
+		start := time.Now()
 		body, retryable, err := c.do(ctx, url)
 		if err == nil {
+			c.log.Info("fetch", "url", url, "bytes", len(body),
+				"elapsed", time.Since(start).Round(time.Millisecond))
 			return body, nil
 		}
+		c.log.Warn("fetch failed", "url", url, "attempt", attempt+1,
+			"retryable", retryable, "err", err)
 		lastErr = err
 		if !retryable {
 			break

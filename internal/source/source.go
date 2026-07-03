@@ -31,6 +31,13 @@ const (
 	ModeFull
 )
 
+func (m Mode) String() string {
+	if m == ModeFull {
+		return "full"
+	}
+	return "incremental"
+}
+
 // Source is a single publisher/site scraped for release data.
 //
 // Fetch returns the releases the publisher lists for the given mode.

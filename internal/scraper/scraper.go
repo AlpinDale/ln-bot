@@ -51,6 +51,7 @@ func (s *Scraper) RunAll(ctx context.Context, mode source.Mode) (Result, error) 
 			return res, err
 		}
 		res.Sources++
+		s.log.Info("scraping source", "source", src.Name(), "mode", mode.String())
 		run := store.ScrapeRun{SourceKey: src.Name(), StartedAt: time.Now()}
 		releases, err := src.Fetch(ctx, s.client, mode)
 		run.FinishedAt = time.Now()
