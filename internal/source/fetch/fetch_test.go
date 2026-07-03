@@ -11,7 +11,7 @@ import (
 )
 
 // A CF-scanner host routes through the URL Scanner API: create scan →
-// poll result → fetch the rendered DOM of the main page.
+// poll result → fetch the main HTML document's captured response.
 func TestCFScannerRouting(t *testing.T) {
 	const wantBody = "<html>SEVEN SEAS RELEASE TABLE</html>"
 	var created bool
@@ -27,8 +27,8 @@ func TestCFScannerRouting(t *testing.T) {
 			if !created {
 				t.Error("polled result before creating scan")
 			}
-			fmt.Fprint(w, `{"task":{"success":true}}`)
-		case strings.HasSuffix(r.URL.Path, "/dom/abc-123"):
+			fmt.Fprint(w, `{"task":{"success":true},"data":{"requests":[{"response":{"hash":"MAINHASH","response":{"mimeType":"text/html"}}}]}}`)
+		case strings.HasSuffix(r.URL.Path, "/responses/MAINHASH"):
 			fmt.Fprint(w, wantBody)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -61,8 +61,8 @@ func TestCFScannerPollsUntilReady(t *testing.T) {
 				http.NotFound(w, r) // still processing
 				return
 			}
-			fmt.Fprint(w, `{"task":{"success":true}}`)
-		case strings.HasSuffix(r.URL.Path, "/dom/u"):
+			fmt.Fprint(w, `{"task":{"success":true},"data":{"requests":[{"response":{"hash":"MAINHASH","response":{"mimeType":"text/html"}}}]}}`)
+		case strings.HasSuffix(r.URL.Path, "/responses/MAINHASH"):
 			fmt.Fprint(w, "ready")
 		}
 	}))
@@ -88,8 +88,8 @@ func TestCFScannerConflictUsesSearch(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/search"):
 			fmt.Fprint(w, `{"tasks":[{"uuid":"recent"}]}`)
 		case strings.HasSuffix(r.URL.Path, "/result/recent"):
-			fmt.Fprint(w, `{"task":{"success":true}}`)
-		case strings.HasSuffix(r.URL.Path, "/dom/recent"):
+			fmt.Fprint(w, `{"task":{"success":true},"data":{"requests":[{"response":{"hash":"MAINHASH","response":{"mimeType":"text/html"}}}]}}`)
+		case strings.HasSuffix(r.URL.Path, "/responses/MAINHASH"):
 			fmt.Fprint(w, "from-search")
 		}
 	}))
@@ -102,6 +102,35 @@ func TestCFScannerConflictUsesSearch(t *testing.T) {
 	}
 	if string(body) != "from-search" {
 		t.Fatalf("body=%q", body)
+	}
+}
+
+// When the result has no structured HTML hash (schema drift), the client
+// falls back to scanning captured response bodies for the real document.
+func TestCFScannerFallbackScansHashes(t *testing.T) {
+	bigDoc := "<!doctype html><html><body>" + strings.Repeat("x", 4000) + "</body></html>"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/scan"):
+			fmt.Fprint(w, `{"uuid":"u"}`)
+		case strings.HasSuffix(r.URL.Path, "/result/u"):
+			// No data.requests html; only a hash list to scan.
+			fmt.Fprint(w, `{"task":{"success":true},"lists":{"hashes":["tiny","doc"]}}`)
+		case strings.HasSuffix(r.URL.Path, "/responses/tiny"):
+			fmt.Fprint(w, "<html>too small</html>") // < 2KB, skipped
+		case strings.HasSuffix(r.URL.Path, "/responses/doc"):
+			fmt.Fprint(w, bigDoc)
+		}
+	}))
+	defer srv.Close()
+
+	c := newCFTestClient(srv.URL)
+	body, err := c.Get(context.Background(), "https://sevenseasentertainment.com/z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != bigDoc {
+		t.Fatalf("fallback picked wrong body (%d bytes)", len(body))
 	}
 }
 
