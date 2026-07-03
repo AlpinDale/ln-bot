@@ -1,0 +1,53 @@
+{
+  "resultCount": 6,
+  "results": [
+    {
+      "trackName": "Tsukimichi - Volume 17 (Light Novel)",
+      "artistName": "Kei Azumi",
+      "kind": "ebook",
+      "releaseDate": "2026-06-30T07:00:00Z",
+      "trackViewUrl": "https://books.apple.com/us/book/tsukimichi-volume-17-light-novel/id6766364381?uo=4",
+      "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Publication221/v4/8c/58/80/8c58802e-a8e9-99b0-2477-33cf368d1a20/f3e0ac99-14f0-4691-a4be-c4b5b98f63ef_cover_image.jpg/100x100bb.jpg"
+    },
+    {
+      "trackName": "GATE (Light Novel), Vol. 1 - Part II",
+      "artistName": "Takumi Yanai",
+      "kind": "ebook",
+      "releaseDate": "2026-06-30T07:00:00Z",
+      "trackViewUrl": "https://books.apple.com/us/book/gate-light-novel-vol-1-part-ii/id6766386887?uo=4",
+      "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Publication221/v4/38/f6/37/38f6375f-b367-edd1-5e13-b9ad0e5ad00c/4bc87fa7-cd97-4a53-99cd-4c043d9c246e_cover_image.jpg/100x100bb.jpg"
+    },
+    {
+      "trackName": "The New Gate - Volume 4 (Light Novel)",
+      "artistName": "Shinogi Kazanami",
+      "kind": "ebook",
+      "releaseDate": "2026-07-30T07:00:00Z",
+      "trackViewUrl": "https://books.apple.com/us/book/the-new-gate-volume-4-light-novel/id6768498104?uo=4",
+      "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Publication211/v4/13/2a/25/132a2522-3fb6-348e-50b8-a14294ece380/b18e86f0-763e-46cb-8943-58a0bffba454_cover_image.jpg/100x100bb.jpg"
+    },
+    {
+      "trackName": "My Pet is a Saintess - Volume 3",
+      "artistName": "Muku Buncho",
+      "kind": "ebook",
+      "releaseDate": "2024-08-30T07:00:00Z",
+      "trackViewUrl": "https://books.apple.com/us/book/my-pet-is-a-saintess-volume-3/id6670145598?uo=4",
+      "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Publication211/v4/b8/3f/7f/b83f7f36-fe35-324e-a843-e5966d24eaab/1f9d6625-b217-49bd-b9fb-6498ab741bbd_cover_image.jpg/100x100bb.jpg"
+    },
+    {
+      "trackName": "Some Audiobook",
+      "artistName": "X",
+      "kind": "audiobook",
+      "releaseDate": "2026-05-01T07:00:00Z",
+      "trackViewUrl": "",
+      "artworkUrl100": ""
+    },
+    {
+      "trackName": "Dateless Book",
+      "artistName": "Y",
+      "kind": "ebook",
+      "releaseDate": "",
+      "trackViewUrl": "",
+      "artworkUrl100": ""
+    }
+  ]
+}

@@ -53,3 +53,7 @@ sources:
     enabled: true
   sevenseas:
     enabled: true
+  # Hanashi Media — sourced from Apple Books (their own sites are behind
+  # a Cloudflare challenge and publish no machine-readable dates).
+  hanashi:
+    enabled: true
