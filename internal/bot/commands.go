@@ -57,12 +57,33 @@ func (b *Bot) commandDefinitions() []*discordgo.ApplicationCommand {
 		{
 			Name:        "scrape",
 			Description: "Admin: full-catalog scrape + announce pass (slow)",
+			Options: []*discordgo.ApplicationCommandOption{
+				{Type: discordgo.ApplicationCommandOptionString, Name: "source",
+					Description: "Scrape one source only (default: all)",
+					Choices:     b.sourceChoices()},
+			},
 		},
 		{
 			Name:        "archive",
 			Description: "Admin: post the full release history to this channel (slow)",
 		},
 	}
+}
+
+// sourceChoices builds the /scrape source dropdown from the enabled
+// sources — label is the publisher name, value is the source key.
+func (b *Bot) sourceChoices() []*discordgo.ApplicationCommandOptionChoice {
+	var choices []*discordgo.ApplicationCommandOptionChoice
+	for _, s := range b.sources() {
+		if !b.cfg.SourceEnabled(s.Name()) {
+			continue
+		}
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+			Name:  s.Publisher(),
+			Value: s.Name(),
+		})
+	}
+	return choices
 }
 
 func (b *Bot) registerCommands() error {
@@ -273,14 +294,24 @@ func (b *Bot) cmdScrape(_ context.Context, i *discordgo.InteractionCreate) strin
 	if !b.isAdmin(i) {
 		return "You're not allowed to run `/scrape`."
 	}
+
+	// Optional single-source filter; absent means every enabled source.
+	var only []string
+	scope := "all sources"
+	if o, ok := options(i)["source"]; ok {
+		key := o.StringValue()
+		only = []string{key}
+		scope = b.publisherName(key)
+	}
+
 	if !b.scraping.CompareAndSwap(false, true) {
 		return "A scrape is already running — hang tight."
 	}
 
 	go func() {
 		defer b.scraping.Store(false)
-		b.log.Info("manual scrape started")
-		summary, err := b.pipeline(b.rootCtx, source.ModeFull)
+		b.log.Info("manual scrape started", "scope", scope)
+		summary, err := b.pipeline(b.rootCtx, source.ModeFull, only)
 		if err != nil {
 			b.log.Error("manual scrape failed", "err", err)
 			summary = "Scrape failed: " + err.Error()
@@ -293,7 +324,19 @@ func (b *Bot) cmdScrape(_ context.Context, i *discordgo.InteractionCreate) strin
 		}
 	}()
 
-	return "🔄 Full scrape started — this can take a while. I'll post a summary here when it's done."
+	return fmt.Sprintf("🔄 Full scrape of **%s** started — this can take a while. "+
+		"I'll post a summary here when it's done.", scope)
+}
+
+// publisherName resolves a source key to its display name, falling back
+// to the key itself.
+func (b *Bot) publisherName(key string) string {
+	for _, s := range b.sources() {
+		if s.Name() == key {
+			return s.Publisher()
+		}
+	}
+	return key
 }
 
 // archiveDelay paces archive posts just over Discord's ~5-per-5s

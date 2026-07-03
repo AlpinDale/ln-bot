@@ -38,17 +38,26 @@ func New(st *store.Store, client *fetch.Client, sources func() []source.Source, 
 	return &Scraper{store: st, client: client, sources: sources, log: log}
 }
 
-// RunAll fetches every enabled source in the given mode. Per-source
-// failures are logged and recorded but do not abort the pass.
-// Concurrent calls serialize.
-func (s *Scraper) RunAll(ctx context.Context, mode source.Mode) (Result, error) {
+// RunAll fetches enabled sources in the given mode. When only is
+// non-empty, just those source names are scraped; otherwise every
+// enabled source runs. Per-source failures are logged and recorded but
+// do not abort the pass. Concurrent calls serialize.
+func (s *Scraper) RunAll(ctx context.Context, mode source.Mode, only []string) (Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	onlySet := map[string]bool{}
+	for _, n := range only {
+		onlySet[n] = true
+	}
 
 	var res Result
 	for _, src := range s.sources() {
 		if err := ctx.Err(); err != nil {
 			return res, err
+		}
+		if len(onlySet) > 0 && !onlySet[src.Name()] {
+			continue
 		}
 		res.Sources++
 		s.log.Info("scraping source", "source", src.Name(), "mode", mode.String())

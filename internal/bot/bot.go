@@ -17,9 +17,10 @@ import (
 	"github.com/alpindale/ln-bot/internal/store"
 )
 
-// PipelineFunc runs scrape + announce on demand (backs /scrape). It
-// returns a human-readable summary.
-type PipelineFunc func(ctx context.Context, mode source.Mode) (string, error)
+// PipelineFunc runs scrape + announce on demand (backs /scrape). When
+// only is non-empty, just those source names are scraped. It returns a
+// human-readable summary.
+type PipelineFunc func(ctx context.Context, mode source.Mode, only []string) (string, error)
 
 // Bot is the Discord layer.
 type Bot struct {

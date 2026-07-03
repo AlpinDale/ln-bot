@@ -75,7 +75,7 @@ func run() error {
 		} else if *oneshot != "incremental" {
 			return fmt.Errorf("-oneshot must be \"incremental\" or \"full\", got %q", *oneshot)
 		}
-		res, err := scr.RunAll(context.Background(), mode)
+		res, err := scr.RunAll(context.Background(), mode, nil)
 		if err != nil {
 			return err
 		}
@@ -97,8 +97,8 @@ func run() error {
 	// The announcer's poster is the bot; break the construction cycle by
 	// declaring the pipeline first as a closure over late-bound vars.
 	var ann *announcer.Announcer
-	pipeline := func(ctx context.Context, mode source.Mode) (string, error) {
-		res, err := scr.RunAll(ctx, mode)
+	pipeline := func(ctx context.Context, mode source.Mode, only []string) (string, error) {
+		res, err := scr.RunAll(ctx, mode, only)
 		if err != nil {
 			return "", err
 		}
@@ -125,7 +125,7 @@ func run() error {
 	// Daily schedule in the configured timezone.
 	c := cron.New(cron.WithLocation(cfg.Location()))
 	_, err = c.AddFunc(cfg.Schedule.Cron, func() {
-		summary, err := pipeline(rootCtx, source.ModeIncremental)
+		summary, err := pipeline(rootCtx, source.ModeIncremental, nil)
 		if err != nil {
 			log.Error("scheduled run failed", "err", err)
 			return
