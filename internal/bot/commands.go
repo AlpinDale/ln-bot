@@ -356,7 +356,10 @@ func (b *Bot) cmdArchive(ctx context.Context, i *discordgo.InteractionCreate) st
 		return "An archive run is already in progress."
 	}
 
-	pending, err := b.store.UnpostedReleases(ctx)
+	// Only the historical record up to today — future releases are left
+	// for the daily announcer to post on their release day.
+	today := model.DateOnly(time.Now().In(b.loc))
+	pending, err := b.store.UnpostedReleases(ctx, today)
 	if err != nil {
 		b.archiving.Store(false)
 		b.log.Error("archive query failed", "err", err)

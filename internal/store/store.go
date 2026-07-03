@@ -153,12 +153,15 @@ func (s *Store) UnalertedInWindow(ctx context.Context, from, to time.Time) ([]mo
 		model.DateOnly(from).Format(dateLayout), model.DateOnly(to).Format(dateLayout))
 }
 
-// UnpostedReleases returns every release not yet posted to the channel
-// (alerted_at IS NULL), in chronological release order — the backlog the
-// archive command drains.
-func (s *Store) UnpostedReleases(ctx context.Context) ([]model.Release, error) {
+// UnpostedReleases returns releases not yet posted to the channel
+// (alerted_at IS NULL) with release_date on or before until, in
+// chronological order — the historical backlog the archive drains.
+// Future releases are excluded: they belong to the daily announcer, which
+// posts them on their actual release day.
+func (s *Store) UnpostedReleases(ctx context.Context, until time.Time) ([]model.Release, error) {
 	return s.queryReleases(ctx,
-		`WHERE alerted_at IS NULL ORDER BY release_date, publisher, volume_title`)
+		`WHERE alerted_at IS NULL AND release_date <= ? ORDER BY release_date, publisher, volume_title`,
+		model.DateOnly(until).Format(dateLayout))
 }
 
 // MarkAlerted stamps a release as announced.

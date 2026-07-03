@@ -202,18 +202,20 @@ func TestUnpostedReleasesOrderedAndFiltered(t *testing.T) {
 	add("Charlie", date(2024, 3, 1))
 	add("Alpha", date(2022, 1, 1))
 	bravoID := add("Bravo", date(2023, 2, 1))
+	add("Future", date(2099, 1, 1)) // dated past the cutoff
 
 	// Mark the middle one posted; it must drop out of the backlog.
 	if err := s.MarkAlerted(ctx, bravoID, now); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := s.UnpostedReleases(ctx)
+	// Cutoff excludes the future-dated release.
+	got, err := s.UnpostedReleases(ctx, date(2025, 1, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("want 2 unposted, got %d", len(got))
+		t.Fatalf("want 2 unposted (future excluded), got %d", len(got))
 	}
 	// Chronological by release_date.
 	if got[0].VolumeTitle != "Alpha" || got[1].VolumeTitle != "Charlie" {
