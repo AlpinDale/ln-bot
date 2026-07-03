@@ -38,3 +38,5 @@ sources:
     enabled: true
   yenpress:
     enabled: true
+  kodansha:
+    enabled: true
