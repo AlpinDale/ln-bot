@@ -48,6 +48,9 @@ type HTTP struct {
 	// HostDelayMS raises the delay for specific hosts (robots.txt
 	// Crawl-delay compliance). Keys are bare hostnames without "www.".
 	HostDelayMS map[string]int `yaml:"host_delay_ms"`
+	// BrowserTLSHosts request a browser-shaped TLS handshake for hosts
+	// whose Cloudflare protection gates on JA3 fingerprint.
+	BrowserTLSHosts []string `yaml:"browser_tls_hosts"`
 }
 
 // SourceConfig holds per-source settings. Extra keys are preserved so
@@ -121,6 +124,11 @@ func (c *Config) applyDefaults() {
 	if c.HTTP.HostDelayMS["viz.com"] < 2000 {
 		c.HTTP.HostDelayMS["viz.com"] = 2000
 	}
+	// Seven Seas' Cloudflare gates on TLS fingerprint; always use the
+	// browser TLS path for it.
+	if !contains(c.HTTP.BrowserTLSHosts, "sevenseasentertainment.com") {
+		c.HTTP.BrowserTLSHosts = append(c.HTTP.BrowserTLSHosts, "sevenseasentertainment.com")
+	}
 	if c.Sources == nil {
 		c.Sources = map[string]SourceConfig{}
 	}
@@ -137,6 +145,15 @@ func (c *Config) validate() error {
 func (c *Config) Location() *time.Location {
 	loc, _ := time.LoadLocation(c.Schedule.Timezone)
 	return loc
+}
+
+func contains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // SourceEnabled reports whether the named source is enabled in config.

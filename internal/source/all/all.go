@@ -7,6 +7,7 @@ import (
 	_ "github.com/alpindale/ln-bot/internal/source/crossinfinite"
 	_ "github.com/alpindale/ln-bot/internal/source/jnovelclub"
 	_ "github.com/alpindale/ln-bot/internal/source/kodansha"
+	_ "github.com/alpindale/ln-bot/internal/source/sevenseas"
 	_ "github.com/alpindale/ln-bot/internal/source/viz"
 	_ "github.com/alpindale/ln-bot/internal/source/yenpress"
 )

@@ -14,6 +14,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
+	tlsclient "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
 )
 
 // Options configures a Client.
@@ -31,6 +35,11 @@ type Options struct {
 	// robots.txt demands a larger Crawl-delay (e.g. viz.com: 2s).
 	// Only overrides that exceed MinDelay take effect.
 	HostDelays map[string]time.Duration
+	// BrowserTLSHosts are hostnames whose Cloudflare protection gates on
+	// TLS fingerprint (JA3) and thus require a browser-shaped TLS
+	// handshake (e.g. sevenseasentertainment.com). Requests to these
+	// hosts use a Chrome TLS profile; the honest User-Agent is kept.
+	BrowserTLSHosts []string
 }
 
 // Client is a rate-limited HTTP client shared by all source plugins.
@@ -41,6 +50,12 @@ type Client struct {
 	hostDelays map[string]time.Duration
 	retries    int
 	log        *slog.Logger
+
+	timeout      time.Duration
+	browserHosts map[string]bool
+	browser      tlsclient.HttpClient // lazily built; guarded by browserOnce
+	browserOnce  sync.Once
+	browserErr   error
 
 	mu      sync.Mutex
 	lastReq time.Time
@@ -65,13 +80,19 @@ func New(opts Options) *Client {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	browserHosts := map[string]bool{}
+	for _, h := range opts.BrowserTLSHosts {
+		browserHosts[strings.TrimPrefix(h, "www.")] = true
+	}
 	return &Client{
-		http:       &http.Client{Timeout: opts.Timeout},
-		userAgent:  opts.UserAgent,
-		minDelay:   opts.MinDelay,
-		hostDelays: opts.HostDelays,
-		retries:    opts.MaxRetries,
-		log:        opts.Logger,
+		http:         &http.Client{Timeout: opts.Timeout},
+		userAgent:    opts.UserAgent,
+		minDelay:     opts.MinDelay,
+		hostDelays:   opts.HostDelays,
+		retries:      opts.MaxRetries,
+		log:          opts.Logger,
+		browserHosts: browserHosts,
+		timeout:      opts.Timeout,
 	}
 }
 
@@ -112,6 +133,10 @@ func (c *Client) do(ctx context.Context, rawURL string) (body []byte, retryable 
 		return nil, false, err
 	}
 
+	if c.useBrowser(rawURL) {
+		return c.doBrowser(ctx, rawURL)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, false, err
@@ -124,19 +149,79 @@ func (c *Client) do(ctx context.Context, rawURL string) (body []byte, retryable 
 		return nil, true, fmt.Errorf("GET %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
+	return handleStatus(rawURL, resp.StatusCode, resp.Body)
+}
 
+func handleStatus(rawURL string, status int, body io.Reader) ([]byte, bool, error) {
 	switch {
-	case resp.StatusCode == http.StatusOK:
-		b, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20)) // 32 MiB cap
+	case status == http.StatusOK:
+		b, err := io.ReadAll(io.LimitReader(body, 32<<20)) // 32 MiB cap
 		if err != nil {
 			return nil, true, fmt.Errorf("GET %s: read body: %w", rawURL, err)
 		}
 		return b, false, nil
-	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
-		return nil, true, fmt.Errorf("GET %s: status %d", rawURL, resp.StatusCode)
+	case status == http.StatusTooManyRequests || status >= 500:
+		return nil, true, fmt.Errorf("GET %s: status %d", rawURL, status)
 	default:
-		return nil, false, fmt.Errorf("GET %s: status %d", rawURL, resp.StatusCode)
+		return nil, false, fmt.Errorf("GET %s: status %d", rawURL, status)
 	}
+}
+
+func (c *Client) useBrowser(rawURL string) bool {
+	if len(c.browserHosts) == 0 {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return c.browserHosts[strings.TrimPrefix(u.Hostname(), "www.")]
+}
+
+// doBrowser issues the request with a Chrome TLS fingerprint. The
+// User-Agent stays honest — only the TLS handshake is browser-shaped,
+// which is what Cloudflare's JA3 gate keys on.
+func (c *Client) doBrowser(ctx context.Context, rawURL string) ([]byte, bool, error) {
+	c.browserOnce.Do(func() {
+		secs := int(c.timeout.Seconds())
+		if secs <= 0 {
+			secs = 30
+		}
+		c.browser, c.browserErr = tlsclient.NewHttpClient(
+			tlsclient.NewNoopLogger(),
+			tlsclient.WithClientProfile(profiles.Chrome_133),
+			tlsclient.WithTimeoutSeconds(secs),
+			tlsclient.WithCookieJar(tlsclient.NewCookieJar()),
+		)
+	})
+	if c.browserErr != nil {
+		return nil, false, fmt.Errorf("browser client init: %w", c.browserErr)
+	}
+
+	req, err := fhttp.NewRequestWithContext(ctx, fhttp.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header = fhttp.Header{
+		"accept":                    {"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+		"accept-language":           {"en-US,en;q=0.9"},
+		"user-agent":                {c.userAgent},
+		"sec-fetch-dest":            {"document"},
+		"sec-fetch-mode":            {"navigate"},
+		"sec-fetch-site":            {"none"},
+		"upgrade-insecure-requests": {"1"},
+		fhttp.HeaderOrderKey: {
+			"accept", "accept-language", "user-agent",
+			"sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
+			"upgrade-insecure-requests",
+		},
+	}
+	resp, err := c.browser.Do(req)
+	if err != nil {
+		return nil, true, fmt.Errorf("GET %s (browser): %w", rawURL, err)
+	}
+	defer resp.Body.Close()
+	return handleStatus(rawURL, resp.StatusCode, resp.Body)
 }
 
 // delayFor returns the effective minimum delay before a request to the

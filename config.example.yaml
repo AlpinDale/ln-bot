@@ -34,6 +34,11 @@ http:
   # (viz.com's 2s is enforced by default even if omitted here).
   host_delay_ms:
     viz.com: 2000
+  # Hosts whose Cloudflare gates on TLS fingerprint; requests use a
+  # browser-shaped TLS handshake (honest User-Agent is kept).
+  # sevenseasentertainment.com is added automatically.
+  browser_tls_hosts:
+    - sevenseasentertainment.com
 
 sources:
   jnovelclub:
@@ -45,4 +50,6 @@ sources:
   kodansha:
     enabled: true
   viz:
+    enabled: true
+  sevenseas:
     enabled: true
