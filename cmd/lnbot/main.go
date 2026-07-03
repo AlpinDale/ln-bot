@@ -34,6 +34,7 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "config.yaml", "path to config file")
+	oneshot := flag.String("oneshot", "", "run a single scrape (\"incremental\" or \"full\") without Discord, then exit")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -57,6 +58,27 @@ func run() error {
 	})
 	enabledSources := func() []source.Source { return source.Enabled(cfg.SourceEnabled) }
 	scr := scraper.New(st, client, enabledSources, log)
+
+	// Scrape-only mode for testing sources: no Discord, no announcing.
+	if *oneshot != "" {
+		mode := source.ModeIncremental
+		if *oneshot == "full" {
+			mode = source.ModeFull
+		} else if *oneshot != "incremental" {
+			return fmt.Errorf("-oneshot must be \"incremental\" or \"full\", got %q", *oneshot)
+		}
+		res, err := scr.RunAll(context.Background(), mode)
+		if err != nil {
+			return err
+		}
+		log.Info("oneshot done", "sources", res.Sources, "fetched", res.Fetched,
+			"new", res.New, "failures", res.Failures)
+		return nil
+	}
+
+	if err := cfg.ValidateDiscord(); err != nil {
+		return err
+	}
 
 	// The announcer's poster is the bot; break the construction cycle by
 	// declaring the pipeline first as a closure over late-bound vars.

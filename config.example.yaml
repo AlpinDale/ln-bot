@@ -34,3 +34,5 @@ http:
 sources:
   jnovelclub:
     enabled: true
+  crossinfinite:
+    enabled: true

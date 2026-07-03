@@ -54,7 +54,8 @@ type SourceConfig struct {
 }
 
 // Load reads the YAML file at path, applies environment overrides and
-// defaults, and validates the result.
+// defaults, and validates the non-Discord parts. Callers that connect
+// to Discord must also call ValidateDiscord.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -70,6 +71,21 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// ValidateDiscord checks the fields required to run the Discord bot.
+// Kept separate so scrape-only modes (-oneshot) work without a token.
+func (c *Config) ValidateDiscord() error {
+	if c.Discord.Token == "" {
+		return fmt.Errorf("LNBOT_DISCORD_TOKEN environment variable is required")
+	}
+	if c.Discord.GuildID == "" {
+		return fmt.Errorf("discord.guild_id is required")
+	}
+	if c.Discord.AlertChannelID == "" {
+		return fmt.Errorf("discord.alert_channel_id is required")
+	}
+	return nil
 }
 
 func (c *Config) applyDefaults() {
@@ -100,15 +116,6 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate() error {
-	if c.Discord.Token == "" {
-		return fmt.Errorf("LNBOT_DISCORD_TOKEN environment variable is required")
-	}
-	if c.Discord.GuildID == "" {
-		return fmt.Errorf("discord.guild_id is required")
-	}
-	if c.Discord.AlertChannelID == "" {
-		return fmt.Errorf("discord.alert_channel_id is required")
-	}
 	if _, err := time.LoadLocation(c.Schedule.Timezone); err != nil {
 		return fmt.Errorf("schedule.timezone: %w", err)
 	}
