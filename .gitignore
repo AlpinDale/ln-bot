@@ -1,0 +1,16 @@
+# Binaries
+/bin/
+/lnbot
+
+# Local runtime data
+/data/
+config.yaml
+
+# Env files
+.env
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store

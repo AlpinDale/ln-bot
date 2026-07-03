@@ -1,0 +1,10 @@
+services:
+  lnbot:
+    build: .
+    image: ln-bot:latest
+    restart: unless-stopped
+    environment:
+      LNBOT_DISCORD_TOKEN: ${LNBOT_DISCORD_TOKEN:?set in .env or environment}
+    volumes:
+      - ./config.yaml:/config.yaml:ro
+      - ./data:/data

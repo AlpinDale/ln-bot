@@ -1,0 +1,74 @@
+{
+  "events": [
+    {
+      "name": "Otherside Picnic: Volume 10",
+      "details": "Ebook Publishing",
+      "launch": "2026-07-13T14:00:00Z",
+      "serie": {
+        "type": "NOVEL",
+        "title": "Otherside Picnic",
+        "slug": "otherside-picnic",
+        "cover": {
+          "coverUrl": "https://cdn.example/otherside-cover.jpg",
+          "thumbnailUrl": "https://cdn.example/otherside-thumb.jpg"
+        }
+      },
+      "thumbnail": {
+        "coverUrl": "https://cdn.example/otherside-vol10.jpg",
+        "thumbnailUrl": "https://cdn.example/otherside-vol10-thumb.jpg"
+      }
+    },
+    {
+      "name": "Ascendance of a Bookworm (Manga) Part 3 Volume 6",
+      "details": "Ebook Publishing",
+      "launch": "2026-07-01T14:00:00Z",
+      "serie": {
+        "type": "MANGA",
+        "title": "Ascendance of a Bookworm (Manga)",
+        "slug": "ascendance-of-a-bookworm-manga",
+        "cover": { "coverUrl": "", "thumbnailUrl": "" }
+      },
+      "thumbnail": { "coverUrl": "", "thumbnailUrl": "" }
+    },
+    {
+      "name": "Knight's & Magic: Volume 10 Part 3",
+      "details": "Prepub Publishing",
+      "launch": "2026-07-03T01:00:00Z",
+      "serie": {
+        "type": "NOVEL",
+        "title": "Knight's & Magic",
+        "slug": "knight-s-magic",
+        "cover": { "coverUrl": "", "thumbnailUrl": "" }
+      },
+      "thumbnail": { "coverUrl": "", "thumbnailUrl": "" }
+    },
+    {
+      "name": "Cooking with Wild Game: Volume 34",
+      "details": "Ebook Publishing",
+      "launch": "not-a-date",
+      "serie": {
+        "type": "NOVEL",
+        "title": "Cooking with Wild Game",
+        "slug": "cooking-with-wild-game",
+        "cover": { "coverUrl": "", "thumbnailUrl": "" }
+      },
+      "thumbnail": { "coverUrl": "", "thumbnailUrl": "" }
+    },
+    {
+      "name": "The Tanaka Family Reincarnates: Volume 7",
+      "details": "Ebook Publishing",
+      "launch": "2026-07-08T14:00:00Z",
+      "serie": {
+        "type": "NOVEL",
+        "title": "The Tanaka Family Reincarnates",
+        "slug": "the-tanaka-family-reincarnates",
+        "cover": {
+          "coverUrl": "https://cdn.example/tanaka-series-cover.jpg",
+          "thumbnailUrl": "https://cdn.example/tanaka-series-thumb.jpg"
+        }
+      },
+      "thumbnail": { "coverUrl": "", "thumbnailUrl": "" }
+    }
+  ],
+  "pagination": { "limit": 200, "skip": 0, "lastPage": true }
+}

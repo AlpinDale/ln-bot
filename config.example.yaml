@@ -1,0 +1,36 @@
+# ln-bot configuration.
+#
+# Copy to config.yaml and fill in your values.
+# The Discord bot token is NOT set here — provide it via the
+# LNBOT_DISCORD_TOKEN environment variable.
+
+discord:
+  # Guild (server) ID where slash commands are registered.
+  guild_id: ""
+  # Channel ID where release-day alerts are posted.
+  alert_channel_id: ""
+  # User or role IDs allowed to run /scrape.
+  admin_ids: []
+
+schedule:
+  # Cron spec for the daily scrape (standard 5-field syntax).
+  cron: "0 9 * * *"
+  timezone: "America/Los_Angeles"
+
+announce:
+  # How many days back to catch up on unalerted releases
+  # (covers missed runs without re-announcing old backlog).
+  lookback_days: 3
+
+database:
+  path: data/lnbot.db
+
+http:
+  user_agent: "ln-release-bot/1.0 (personal release tracker)"
+  # Minimum delay between requests to the same source.
+  min_delay_ms: 1500
+  timeout_seconds: 30
+
+sources:
+  jnovelclub:
+    enabled: true
