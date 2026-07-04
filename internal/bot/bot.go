@@ -98,26 +98,38 @@ func (b *Bot) PostRelease(_ context.Context, r model.Release) error {
 		Footer: &discordgo.MessageEmbedFooter{Text: "source: " + r.SourceKey},
 	}
 	// Discord rejects the whole embed on a malformed url/thumbnail, so
-	// only set them when valid (and log dropped ones to catch bad data).
-	if validURL(r.URL) {
-		embed.URL = r.URL
+	// normalize (percent-encoding raw spaces/Unicode) and only set them
+	// when the result is a valid absolute http(s) URL.
+	if clean, ok := cleanURL(r.URL); ok {
+		embed.URL = clean
+		if clean != r.URL {
+			b.log.Info("normalized release URL", "source", r.SourceKey, "from", r.URL, "to", clean)
+		}
 	} else if r.URL != "" {
-		b.log.Warn("dropping invalid release URL", "source", r.SourceKey, "title", r.VolumeTitle, "url", r.URL)
+		b.log.Warn("dropping unusable release URL", "source", r.SourceKey, "title", r.VolumeTitle, "url", r.URL)
 	}
-	if validURL(r.CoverURL) {
-		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: r.CoverURL}
+	if clean, ok := cleanURL(r.CoverURL); ok {
+		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: clean}
 	} else if r.CoverURL != "" {
-		b.log.Warn("dropping invalid cover URL", "source", r.SourceKey, "title", r.VolumeTitle, "url", r.CoverURL)
+		b.log.Warn("dropping unusable cover URL", "source", r.SourceKey, "title", r.VolumeTitle, "url", r.CoverURL)
 	}
 	_, err := b.session.ChannelMessageSendEmbed(b.cfg.Discord.AlertChannelID, embed)
 	return err
 }
 
-// validURL reports whether s is an absolute http(s) URL that Discord will
-// accept in an embed.
-func validURL(s string) bool {
+// cleanURL validates s as an absolute http(s) URL and returns it
+// normalized — percent-encoding raw spaces and non-ASCII so Discord (and
+// browsers) accept it. ok is false for empty, relative, or unparseable
+// URLs, or non-http(s) schemes.
+func cleanURL(s string) (string, bool) {
+	if s == "" {
+		return "", false
+	}
 	u, err := url.Parse(s)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", false
+	}
+	return u.String(), true
 }
 
 func orDash(s string) string {
