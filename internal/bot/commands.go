@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,22 @@ func (b *Bot) commandDefinitions() []*discordgo.ApplicationCommand {
 					Description:  "Series name (start typing for suggestions)",
 					Required:     true,
 					Autocomplete: true},
+			},
+		},
+		{
+			Name:        "post",
+			Description: "Post a specific volume — to everyone, or just yourself",
+			Options: []*discordgo.ApplicationCommandOption{
+				{Type: discordgo.ApplicationCommandOptionString, Name: "series",
+					Description:  "Series (start typing for suggestions)",
+					Required:     true,
+					Autocomplete: true},
+				{Type: discordgo.ApplicationCommandOptionString, Name: "volume",
+					Description:  "Volume (suggestions scoped to the chosen series)",
+					Required:     true,
+					Autocomplete: true},
+				{Type: discordgo.ApplicationCommandOptionBoolean, Name: "public",
+					Description: "Show to everyone in the channel (default: only you)"},
 			},
 		},
 		{
@@ -124,33 +141,30 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 }
 
-// handleAutocomplete backs the /series `name` box: for each keystroke
-// Discord asks for suggestions, and we return up to 25 series titles
-// matching what's typed so far. Must answer within ~3s.
+// handleAutocomplete serves live suggestions as the user types. It backs
+// /series (`name`) and /post, whose `volume` box is scoped to the `series`
+// already picked in the same invocation. Must answer within ~3s.
 func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.ApplicationCommandData()
-	if data.Name != "series" {
-		return
-	}
-	var focused string
+	var focusedName, focused string
 	for _, o := range data.Options {
 		if o.Focused {
-			focused = o.StringValue()
+			focusedName, focused = o.Name, o.StringValue()
 			break
 		}
 	}
+	focused = strings.TrimSpace(focused)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	names, err := b.store.DistinctSeries(ctx, strings.TrimSpace(focused), 25)
-	if err != nil {
-		b.log.Error("autocomplete query failed", "err", err)
+	var choices []*discordgo.ApplicationCommandOptionChoice
+	switch {
+	case data.Name == "series", data.Name == "post" && focusedName == "series":
+		choices = b.seriesChoices(ctx, focused)
+	case data.Name == "post" && focusedName == "volume":
+		choices = b.volumeChoices(ctx, optionValue(data.Options, "series"), focused)
 	}
-	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(names))
-	for _, n := range names {
-		label := truncate(n, 100) // Discord caps choice name/value at 100 chars
-		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: label, Value: label})
-	}
+
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
 		Data: &discordgo.InteractionResponseData{Choices: choices},
@@ -159,9 +173,94 @@ func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionC
 	}
 }
 
+// seriesChoices returns up to 25 series titles matching what's typed.
+func (b *Bot) seriesChoices(ctx context.Context, typed string) []*discordgo.ApplicationCommandOptionChoice {
+	names, err := b.store.DistinctSeries(ctx, typed, 25)
+	if err != nil {
+		b.log.Error("series autocomplete query failed", "err", err)
+	}
+	out := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(names))
+	for _, n := range names {
+		label := truncate(n, 100) // Discord caps choice name/value at 100 chars
+		out = append(out, &discordgo.ApplicationCommandOptionChoice{Name: label, Value: label})
+	}
+	return out
+}
+
+// volumeChoices returns the volumes/editions of seriesInput, filtered by
+// what's typed — each choice's value is the release ID, so submission maps
+// straight to a row and the user can't pick something out of scope.
+func (b *Bot) volumeChoices(ctx context.Context, seriesInput, typed string) []*discordgo.ApplicationCommandOptionChoice {
+	if seriesInput == "" {
+		return nil // no series chosen yet — nothing to scope to
+	}
+	rels, err := b.store.ReleasesForSeries(ctx, seriesInput)
+	if err != nil {
+		b.log.Error("volume autocomplete query failed", "err", err)
+	}
+	if len(rels) == 0 {
+		// Series was free-typed and isn't an exact title; recover it.
+		if cands, _ := b.store.DistinctSeries(ctx, seriesInput, 1); len(cands) == 1 {
+			rels, _ = b.store.ReleasesForSeries(ctx, cands[0])
+		}
+	}
+	typed = strings.ToLower(typed)
+	// Prefix matches first; rels arrive pre-sorted (date, format), and a
+	// stable sort preserves that order within each rank.
+	type scored struct {
+		r    model.Release
+		rank int
+	}
+	var xs []scored
+	for _, r := range rels {
+		vt := strings.ToLower(stripSeriesPrefix(r.VolumeTitle, r.SeriesTitle))
+		if typed != "" && !strings.Contains(vt, typed) {
+			continue
+		}
+		rank := 1
+		if typed == "" || strings.HasPrefix(vt, typed) {
+			rank = 0
+		}
+		xs = append(xs, scored{r, rank})
+	}
+	sort.SliceStable(xs, func(i, j int) bool { return xs[i].rank < xs[j].rank })
+
+	out := make([]*discordgo.ApplicationCommandOptionChoice, 0, 25)
+	for _, x := range xs {
+		if len(out) == 25 {
+			break
+		}
+		vol := stripSeriesPrefix(x.r.VolumeTitle, x.r.SeriesTitle)
+		label := truncate(fmt.Sprintf("%s · %s · %s",
+			vol, x.r.ReleaseDate.Format(dateLayout), DisplayFormat(x.r.Format)), 100)
+		out = append(out, &discordgo.ApplicationCommandOptionChoice{
+			Name: label, Value: strconv.FormatInt(x.r.ID, 10),
+		})
+	}
+	return out
+}
+
+// optionValue reads a slash-command option's string value by name (used to
+// read one option while a different one is focused during autocomplete).
+func optionValue(opts []*discordgo.ApplicationCommandInteractionDataOption, name string) string {
+	for _, o := range opts {
+		if o.Name == name {
+			return o.StringValue()
+		}
+	}
+	return ""
+}
+
 func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	name := i.ApplicationCommandData().Name
 	b.log.Info("command", "name", name)
+
+	// /post manages its own response: it may be public (non-ephemeral) and
+	// carry a delete button, which the shared ephemeral-defer flow can't do.
+	if name == "post" {
+		b.cmdPost(s, i)
+		return
+	}
 
 	// Everything is answered via deferred response so slow paths
 	// (scrape) and fast paths share one shape. Replies are ephemeral —
@@ -225,6 +324,11 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 		if len(data.Values) > 0 {
 			b.handleSeriesPick(s, i, data.Values[0])
 		}
+		return
+	}
+	// Delete button on a public /post message — scoped to its poster.
+	if owner, ok := strings.CutPrefix(data.CustomID, postDelPrefix); ok {
+		b.handlePostDelete(s, i, owner)
 		return
 	}
 	q, ok := parsePageID(data.CustomID)
@@ -475,6 +579,124 @@ func stripSeriesPrefix(vol, series string) string {
 		return vol
 	}
 	return v
+}
+
+// postDelPrefix precedes the poster's user ID in a delete button's
+// custom_id, so the message survives restarts and only its poster can
+// remove it.
+const postDelPrefix = "postdel:"
+
+// cmdPost answers /post: render the chosen volume as a card, either
+// ephemerally (only the invoker sees it) or publicly in the channel with a
+// poster-scoped delete button. It handles its own interaction response.
+func (b *Bot) cmdPost(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	opts := options(i)
+	public := false
+	if o, ok := opts["public"]; ok {
+		public = o.BoolValue()
+	}
+
+	var rel model.Release
+	found := false
+	if o, ok := opts["volume"]; ok {
+		if id, err := strconv.ParseInt(o.StringValue(), 10, 64); err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			rel, found, err = b.store.ReleaseByID(ctx, id)
+			if err != nil {
+				b.log.Error("post lookup failed", "err", err)
+			}
+		}
+	}
+	if !found {
+		b.respondEphemeral(s, i, "Pick a volume from the suggestions (choose a series first, then a volume).")
+		return
+	}
+
+	resp := &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Embeds: []*discordgo.MessageEmbed{releaseCard(rel)}},
+	}
+	if public {
+		resp.Data.Components = []discordgo.MessageComponent{discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{discordgo.Button{
+				Label:    "Delete",
+				Style:    discordgo.DangerButton,
+				Emoji:    &discordgo.ComponentEmoji{Name: "🗑️"},
+				CustomID: postDelPrefix + invokerID(i),
+			}},
+		}}
+	} else {
+		resp.Data.Flags = discordgo.MessageFlagsEphemeral
+	}
+	if err := s.InteractionRespond(i.Interaction, resp); err != nil {
+		b.log.Error("post respond failed", "err", err)
+	}
+}
+
+// handlePostDelete removes a public /post message, but only when the
+// clicker is the user who posted it (encoded in the button's custom_id).
+func (b *Bot) handlePostDelete(s *discordgo.Session, i *discordgo.InteractionCreate, ownerID string) {
+	if invokerID(i) != ownerID {
+		b.respondEphemeral(s, i, "Only the person who posted this can delete it.")
+		return
+	}
+	// Ack silently, then delete the message the button sits on (the bot owns
+	// it, so no Manage Messages permission is needed).
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredMessageUpdate,
+	}); err != nil {
+		b.log.Error("post delete ack failed", "err", err)
+		return
+	}
+	if err := s.ChannelMessageDelete(i.ChannelID, i.Message.ID); err != nil {
+		b.log.Error("post delete failed", "err", err)
+	}
+}
+
+// releaseCard builds a standalone embed for one release, with URLs
+// sanitized the same way as channel announcements.
+func releaseCard(r model.Release) *discordgo.MessageEmbed {
+	embed := &discordgo.MessageEmbed{
+		Title:       truncate(r.VolumeTitle, embedTitleMax),
+		Description: fmt.Sprintf("**%s**", r.Publisher),
+		Color:       0x5865F2, // blurple
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "Series", Value: truncate(orDash(r.SeriesTitle), embedFieldMax), Inline: true},
+			{Name: "Format", Value: DisplayFormat(r.Format), Inline: true},
+			{Name: "Release date", Value: r.ReleaseDate.Format(dateLayout), Inline: true},
+		},
+		Footer: &discordgo.MessageEmbedFooter{Text: "source: " + r.SourceKey},
+	}
+	if clean, ok := cleanURL(r.URL); ok {
+		embed.URL = clean
+	}
+	if clean, ok := cleanURL(r.CoverURL); ok {
+		embed.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: clean}
+	}
+	return embed
+}
+
+// respondEphemeral sends a one-off ephemeral reply to an interaction.
+func (b *Bot) respondEphemeral(s *discordgo.Session, i *discordgo.InteractionCreate, content string) {
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Content: content, Flags: discordgo.MessageFlagsEphemeral},
+	}); err != nil {
+		b.log.Error("ephemeral respond failed", "err", err)
+	}
+}
+
+// invokerID returns the user ID behind an interaction, whether it arrived
+// from a guild member or a DM user.
+func invokerID(i *discordgo.InteractionCreate) string {
+	if i.Member != nil && i.Member.User != nil {
+		return i.Member.User.ID
+	}
+	if i.User != nil {
+		return i.User.ID
+	}
+	return ""
 }
 
 func (b *Bot) cmdSources(ctx context.Context) string {

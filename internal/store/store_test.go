@@ -275,6 +275,18 @@ func TestSeriesQueries(t *testing.T) {
 	if n, _ := s.ReleasesForSeries(ctx, "Nonexistent"); len(n) != 0 {
 		t.Fatalf("unknown series should be empty, got %d", len(n))
 	}
+
+	// ReleaseByID round-trips a known row and reports misses.
+	one, found, err := s.ReleaseByID(ctx, rs[0].ID)
+	if err != nil || !found {
+		t.Fatalf("ReleaseByID(%d) found=%v err=%v", rs[0].ID, found, err)
+	}
+	if one.VolumeTitle != rs[0].VolumeTitle {
+		t.Fatalf("ReleaseByID wrong row: %q", one.VolumeTitle)
+	}
+	if _, found, _ = s.ReleaseByID(ctx, 999999); found {
+		t.Fatal("ReleaseByID for missing id should report not found")
+	}
 }
 
 func TestScrapeRunHistory(t *testing.T) {

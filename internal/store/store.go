@@ -221,6 +221,19 @@ func (s *Store) DistinctSeries(ctx context.Context, query string, limit int) ([]
 	return out, rows.Err()
 }
 
+// ReleaseByID returns the release with the given id; found is false when no
+// such row exists.
+func (s *Store) ReleaseByID(ctx context.Context, id int64) (rel model.Release, found bool, err error) {
+	rs, err := s.queryReleases(ctx, `WHERE id = ?`, id)
+	if err != nil {
+		return model.Release{}, false, err
+	}
+	if len(rs) == 0 {
+		return model.Release{}, false, nil
+	}
+	return rs[0], true, nil
+}
+
 // ReleasesForSeries returns every release whose series_title matches
 // seriesTitle case-insensitively (exact), chronologically ordered — all
 // known volumes/editions of one series.
