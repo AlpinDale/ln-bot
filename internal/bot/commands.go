@@ -181,28 +181,54 @@ func (b *Bot) seriesChoices(ctx context.Context, typed string) []*discordgo.Appl
 	}
 	out := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(names))
 	for _, n := range names {
-		label := truncate(n, 100) // Discord caps choice name/value at 100 chars
-		out = append(out, &discordgo.ApplicationCommandOptionChoice{Name: label, Value: label})
+		// Name may carry an ellipsis (display); Value must stay a real
+		// prefix so long titles still resolve on lookup.
+		out = append(out, &discordgo.ApplicationCommandOptionChoice{Name: truncate(n, 100), Value: choiceValue(n)})
 	}
 	return out
+}
+
+// choiceValue caps s to Discord's 100-char option-value limit without an
+// ellipsis, keeping it a genuine prefix of the original so a longer stored
+// title still resolves via prefix match.
+func choiceValue(s string) string {
+	rs := []rune(s)
+	if len(rs) > 100 {
+		return string(rs[:100])
+	}
+	return s
+}
+
+// resolveSeries maps a (possibly 100-char-truncated) series value to the
+// stored series title(s) it identifies: an exact case-insensitive match
+// wins; otherwise titles containing the value as a substring — which
+// recovers a long title from its prefix. Empty when nothing matches.
+func (b *Bot) resolveSeries(ctx context.Context, input string) []string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+	if rels, err := b.store.ReleasesForSeries(ctx, input); err == nil && len(rels) > 0 {
+		return []string{rels[0].SeriesTitle}
+	}
+	cands, err := b.store.DistinctSeries(ctx, input, 25)
+	if err != nil {
+		b.log.Error("series resolve failed", "err", err)
+	}
+	return cands
 }
 
 // volumeChoices returns the volumes/editions of seriesInput, filtered by
 // what's typed — each choice's value is the release ID, so submission maps
 // straight to a row and the user can't pick something out of scope.
 func (b *Bot) volumeChoices(ctx context.Context, seriesInput, typed string) []*discordgo.ApplicationCommandOptionChoice {
-	if seriesInput == "" {
-		return nil // no series chosen yet — nothing to scope to
+	cands := b.resolveSeries(ctx, seriesInput)
+	if len(cands) == 0 {
+		return nil // no series chosen/matched yet — nothing to scope to
 	}
-	rels, err := b.store.ReleasesForSeries(ctx, seriesInput)
+	rels, err := b.store.ReleasesForSeries(ctx, cands[0])
 	if err != nil {
 		b.log.Error("volume autocomplete query failed", "err", err)
-	}
-	if len(rels) == 0 {
-		// Series was free-typed and isn't an exact title; recover it.
-		if cands, _ := b.store.DistinctSeries(ctx, seriesInput, 1); len(cands) == 1 {
-			rels, _ = b.store.ReleasesForSeries(ctx, cands[0])
-		}
 	}
 	typed = strings.ToLower(typed)
 	// Prefix matches first; rels arrive pre-sorted (date, format), and a
@@ -436,29 +462,23 @@ func (b *Bot) cmdSeries(ctx context.Context, i *discordgo.InteractionCreate) (st
 	if name == "" {
 		return "Type a series name — start typing to get suggestions.", nil, nil
 	}
-	rels, err := b.store.ReleasesForSeries(ctx, name)
-	if err != nil {
-		b.log.Error("series query failed", "err", err)
-		return "Query failed — check the logs.", nil, nil
-	}
-	if len(rels) == 0 {
-		cands, err := b.store.DistinctSeries(ctx, name, 25)
+	cands := b.resolveSeries(ctx, name)
+	switch len(cands) {
+	case 0:
+		return fmt.Sprintf("No series found matching **%s**.", truncate(name, 100)), nil, nil
+	case 1:
+		rels, err := b.store.ReleasesForSeries(ctx, cands[0])
 		if err != nil {
-			b.log.Error("series lookup failed", "err", err)
+			b.log.Error("series query failed", "err", err)
 			return "Query failed — check the logs.", nil, nil
 		}
-		switch len(cands) {
-		case 0:
+		if len(rels) == 0 {
 			return fmt.Sprintf("No series found matching **%s**.", truncate(name, 100)), nil, nil
-		case 1:
-			if rels, err = b.store.ReleasesForSeries(ctx, cands[0]); err != nil || len(rels) == 0 {
-				return fmt.Sprintf("No series found matching **%s**.", truncate(name, 100)), nil, nil
-			}
-		default:
-			return b.seriesPicker(name, cands)
 		}
+		return "", []*discordgo.MessageEmbed{renderSeriesEmbed(rels)}, nil
+	default:
+		return b.seriesPicker(name, cands)
 	}
-	return "", []*discordgo.MessageEmbed{renderSeriesEmbed(rels)}, nil
 }
 
 // seriesPicker renders a dropdown of candidate series when a free-typed
@@ -466,8 +486,9 @@ func (b *Bot) cmdSeries(ctx context.Context, i *discordgo.InteractionCreate) (st
 func (b *Bot) seriesPicker(query string, cands []string) (string, []*discordgo.MessageEmbed, []discordgo.MessageComponent) {
 	opts := make([]discordgo.SelectMenuOption, 0, len(cands))
 	for _, c := range cands {
-		v := truncate(c, 100)
-		opts = append(opts, discordgo.SelectMenuOption{Label: v, Value: v})
+		// Label may be ellipsized for display; the value must stay a real
+		// prefix so long titles resolve when picked.
+		opts = append(opts, discordgo.SelectMenuOption{Label: truncate(c, 100), Value: choiceValue(c)})
 	}
 	row := discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 		discordgo.SelectMenu{
@@ -486,15 +507,11 @@ func (b *Bot) handleSeriesPick(s *discordgo.Session, i *discordgo.InteractionCre
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	rels, err := b.store.ReleasesForSeries(ctx, sel)
-	if err != nil {
-		b.log.Error("series pick query failed", "err", err)
-	}
-	if len(rels) == 0 {
-		// A title longer than the 100-char option value won't match
-		// exactly; recover it by prefix.
-		if cands, _ := b.store.DistinctSeries(ctx, sel, 1); len(cands) == 1 {
-			rels, _ = b.store.ReleasesForSeries(ctx, cands[0])
+	var rels []model.Release
+	if cands := b.resolveSeries(ctx, sel); len(cands) > 0 {
+		var err error
+		if rels, err = b.store.ReleasesForSeries(ctx, cands[0]); err != nil {
+			b.log.Error("series pick query failed", "err", err)
 		}
 	}
 	data := &discordgo.InteractionResponseData{
@@ -641,15 +658,17 @@ func (b *Bot) handlePostDelete(s *discordgo.Session, i *discordgo.InteractionCre
 		b.respondEphemeral(s, i, "Only the person who posted this can delete it.")
 		return
 	}
-	// Ack silently, then delete the message the button sits on (the bot owns
-	// it, so no Manage Messages permission is needed).
+	// Ack the click, then delete the message via the interaction token. For
+	// a component interaction the "@original" message is the one the button
+	// sits on, and the token-based delete works even where the bot lacks
+	// channel access (a plain channel delete returns 403 Missing Access).
 	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredMessageUpdate,
 	}); err != nil {
 		b.log.Error("post delete ack failed", "err", err)
 		return
 	}
-	if err := s.ChannelMessageDelete(i.ChannelID, i.Message.ID); err != nil {
+	if err := s.InteractionResponseDelete(i.Interaction); err != nil {
 		b.log.Error("post delete failed", "err", err)
 	}
 }
