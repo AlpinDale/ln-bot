@@ -189,6 +189,47 @@ func (s *Store) ReleasesBetween(ctx context.Context, from, to time.Time, publish
 	return s.queryReleases(ctx, q, args...)
 }
 
+// DistinctSeries returns up to limit distinct series titles matching query
+// as a case-insensitive substring, prefix matches first, then alphabetical.
+// An empty query returns the alphabetically-first series — this backs the
+// /series autocomplete (and its free-text disambiguation fallback).
+func (s *Store) DistinctSeries(ctx context.Context, query string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 25
+	}
+	q := strings.ToLower(query)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT series_title FROM (
+			SELECT DISTINCT series_title FROM releases
+			WHERE series_title <> '' AND LOWER(series_title) LIKE ?
+		)
+		ORDER BY CASE WHEN LOWER(series_title) LIKE ? THEN 0 ELSE 1 END, series_title
+		LIMIT ?`, "%"+q+"%", q+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("query series: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var title string
+		if err := rows.Scan(&title); err != nil {
+			return nil, err
+		}
+		out = append(out, title)
+	}
+	return out, rows.Err()
+}
+
+// ReleasesForSeries returns every release whose series_title matches
+// seriesTitle case-insensitively (exact), chronologically ordered — all
+// known volumes/editions of one series.
+func (s *Store) ReleasesForSeries(ctx context.Context, seriesTitle string) ([]model.Release, error) {
+	return s.queryReleases(ctx,
+		`WHERE LOWER(series_title) = LOWER(?) ORDER BY release_date, format, volume_title`,
+		seriesTitle)
+}
+
 func (s *Store) queryReleases(ctx context.Context, whereOrder string, args ...any) ([]model.Release, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, source_key, publisher, series_title, volume_title, format,

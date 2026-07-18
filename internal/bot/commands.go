@@ -51,6 +51,16 @@ func (b *Bot) commandDefinitions() []*discordgo.ApplicationCommand {
 			},
 		},
 		{
+			Name:        "series",
+			Description: "All known volumes and release dates for a series",
+			Options: []*discordgo.ApplicationCommandOption{
+				{Type: discordgo.ApplicationCommandOptionString, Name: "name",
+					Description:  "Series name (start typing for suggestions)",
+					Required:     true,
+					Autocomplete: true},
+			},
+		},
+		{
 			Name:        "sources",
 			Description: "Registered release sources and their last scrape",
 		},
@@ -107,8 +117,45 @@ func (b *Bot) handleInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
 		b.handleCommand(s, i)
+	case discordgo.InteractionApplicationCommandAutocomplete:
+		b.handleAutocomplete(s, i)
 	case discordgo.InteractionMessageComponent:
 		b.handleComponent(s, i)
+	}
+}
+
+// handleAutocomplete backs the /series `name` box: for each keystroke
+// Discord asks for suggestions, and we return up to 25 series titles
+// matching what's typed so far. Must answer within ~3s.
+func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ApplicationCommandData()
+	if data.Name != "series" {
+		return
+	}
+	var focused string
+	for _, o := range data.Options {
+		if o.Focused {
+			focused = o.StringValue()
+			break
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	names, err := b.store.DistinctSeries(ctx, strings.TrimSpace(focused), 25)
+	if err != nil {
+		b.log.Error("autocomplete query failed", "err", err)
+	}
+	choices := make([]*discordgo.ApplicationCommandOptionChoice, 0, len(names))
+	for _, n := range names {
+		label := truncate(n, 100) // Discord caps choice name/value at 100 chars
+		choices = append(choices, &discordgo.ApplicationCommandOptionChoice{Name: label, Value: label})
+	}
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+		Data: &discordgo.InteractionResponseData{Choices: choices},
+	}); err != nil {
+		b.log.Error("autocomplete respond failed", "err", err)
 	}
 }
 
@@ -137,6 +184,7 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	var reply string
 	var components []discordgo.MessageComponent
+	var embeds []*discordgo.MessageEmbed
 	switch name {
 	case "upcoming":
 		reply, components = b.cmdWindow(ctx, i, 0, +1)
@@ -144,6 +192,8 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 		reply, components = b.cmdWindow(ctx, i, -1, 0)
 	case "releases":
 		reply, components = b.cmdReleases(ctx, i)
+	case "series":
+		reply, embeds, components = b.cmdSeries(ctx, i)
 	case "sources":
 		reply = b.cmdSources(ctx)
 	case "scrape":
@@ -156,6 +206,7 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	if _, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 		Content:    reply,
+		Embeds:     embeds,
 		Components: components,
 		Flags:      discordgo.MessageFlagsEphemeral,
 	}); err != nil {
@@ -167,7 +218,16 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 // the full query, so each press re-queries the store and edits the
 // message in place. Stateless — survives restarts, holds no sessions.
 func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	q, ok := parsePageID(i.MessageComponentData().CustomID)
+	data := i.MessageComponentData()
+	// The /series disambiguation dropdown: the picked value is the series
+	// title to render.
+	if data.CustomID == seriesPickID {
+		if len(data.Values) > 0 {
+			b.handleSeriesPick(s, i, data.Values[0])
+		}
+		return
+	}
+	q, ok := parsePageID(data.CustomID)
 	if !ok {
 		return
 	}
@@ -254,6 +314,167 @@ func (b *Bot) releasePageReply(ctx context.Context, q pageQuery) (string, []disc
 		return "Query failed — check the logs.", nil
 	}
 	return content, components
+}
+
+// seriesPickID is the custom_id of the /series disambiguation dropdown.
+const seriesPickID = "srspick"
+
+// seriesDescBudget caps the volume list in a /series embed, leaving room
+// under Discord's 4096-char description limit for an overflow note.
+const seriesDescBudget = 3800
+
+// cmdSeries answers /series: show every known volume/edition of a series
+// with its release date. The autocomplete usually hands us an exact title,
+// but a free-typed value is matched fuzzily — one hit renders directly,
+// several offer a dropdown to disambiguate.
+func (b *Bot) cmdSeries(ctx context.Context, i *discordgo.InteractionCreate) (string, []*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+	name := strings.TrimSpace(options(i)["name"].StringValue())
+	if name == "" {
+		return "Type a series name — start typing to get suggestions.", nil, nil
+	}
+	rels, err := b.store.ReleasesForSeries(ctx, name)
+	if err != nil {
+		b.log.Error("series query failed", "err", err)
+		return "Query failed — check the logs.", nil, nil
+	}
+	if len(rels) == 0 {
+		cands, err := b.store.DistinctSeries(ctx, name, 25)
+		if err != nil {
+			b.log.Error("series lookup failed", "err", err)
+			return "Query failed — check the logs.", nil, nil
+		}
+		switch len(cands) {
+		case 0:
+			return fmt.Sprintf("No series found matching **%s**.", truncate(name, 100)), nil, nil
+		case 1:
+			if rels, err = b.store.ReleasesForSeries(ctx, cands[0]); err != nil || len(rels) == 0 {
+				return fmt.Sprintf("No series found matching **%s**.", truncate(name, 100)), nil, nil
+			}
+		default:
+			return b.seriesPicker(name, cands)
+		}
+	}
+	return "", []*discordgo.MessageEmbed{renderSeriesEmbed(rels)}, nil
+}
+
+// seriesPicker renders a dropdown of candidate series when a free-typed
+// name matches more than one.
+func (b *Bot) seriesPicker(query string, cands []string) (string, []*discordgo.MessageEmbed, []discordgo.MessageComponent) {
+	opts := make([]discordgo.SelectMenuOption, 0, len(cands))
+	for _, c := range cands {
+		v := truncate(c, 100)
+		opts = append(opts, discordgo.SelectMenuOption{Label: v, Value: v})
+	}
+	row := discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+		discordgo.SelectMenu{
+			MenuType:    discordgo.StringSelectMenu,
+			CustomID:    seriesPickID,
+			Placeholder: "Select a series…",
+			Options:     opts,
+		},
+	}}
+	return fmt.Sprintf("Multiple series match **%s** — pick one:", truncate(query, 100)),
+		nil, []discordgo.MessageComponent{row}
+}
+
+// handleSeriesPick renders the chosen series in place of the dropdown.
+func (b *Bot) handleSeriesPick(s *discordgo.Session, i *discordgo.InteractionCreate, sel string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	rels, err := b.store.ReleasesForSeries(ctx, sel)
+	if err != nil {
+		b.log.Error("series pick query failed", "err", err)
+	}
+	if len(rels) == 0 {
+		// A title longer than the 100-char option value won't match
+		// exactly; recover it by prefix.
+		if cands, _ := b.store.DistinctSeries(ctx, sel, 1); len(cands) == 1 {
+			rels, _ = b.store.ReleasesForSeries(ctx, cands[0])
+		}
+	}
+	data := &discordgo.InteractionResponseData{
+		Flags:      discordgo.MessageFlagsEphemeral,
+		Components: []discordgo.MessageComponent{}, // drop the dropdown
+	}
+	if len(rels) == 0 {
+		data.Content = "Couldn't load that series."
+	} else {
+		data.Embeds = []*discordgo.MessageEmbed{renderSeriesEmbed(rels)}
+	}
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: data,
+	}); err != nil {
+		b.log.Error("series pick update failed", "err", err)
+	}
+}
+
+// renderSeriesEmbed builds the series card: a chronological list of every
+// volume/edition (linked where a URL exists) plus publisher/format summary.
+// rels must be non-empty and is expected pre-sorted by the store.
+func renderSeriesEmbed(rels []model.Release) *discordgo.MessageEmbed {
+	title := rels[0].SeriesTitle
+
+	var pubs, formats []string
+	seenPub, seenFmt := map[string]bool{}, map[string]bool{}
+	for _, r := range rels {
+		if r.Publisher != "" && !seenPub[r.Publisher] {
+			seenPub[r.Publisher] = true
+			pubs = append(pubs, r.Publisher)
+		}
+		if f := DisplayFormat(r.Format); !seenFmt[f] {
+			seenFmt[f] = true
+			formats = append(formats, f)
+		}
+	}
+
+	var sb strings.Builder
+	shown := 0
+	for _, r := range rels {
+		vol := stripSeriesPrefix(r.VolumeTitle, title)
+		date := r.ReleaseDate.Format(dateLayout)
+		f := DisplayFormat(r.Format)
+		var line string
+		if clean, ok := cleanURL(r.URL); ok {
+			line = fmt.Sprintf("- `%s` [%s](<%s>) · %s\n", date, vol, clean, f)
+		} else {
+			line = fmt.Sprintf("- `%s` %s · %s\n", date, vol, f)
+		}
+		if sb.Len()+len(line) > seriesDescBudget {
+			break
+		}
+		sb.WriteString(line)
+		shown++
+	}
+	if shown < len(rels) {
+		fmt.Fprintf(&sb, "…and %d more.", len(rels)-shown)
+	}
+
+	return &discordgo.MessageEmbed{
+		Title:       truncate(title, embedTitleMax),
+		Description: sb.String(),
+		Color:       0x5865F2, // blurple
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "Publisher", Value: truncate(orDash(strings.Join(pubs, ", ")), embedFieldMax), Inline: true},
+			{Name: "Known releases", Value: strconv.Itoa(len(rels)), Inline: true},
+			{Name: "Formats", Value: truncate(orDash(strings.Join(formats, ", ")), embedFieldMax), Inline: true},
+		},
+	}
+}
+
+// stripSeriesPrefix drops a leading series name (and trailing separators)
+// from a volume title so the list doesn't repeat the series on every line.
+// Falls back to the full title if nothing meaningful remains.
+func stripSeriesPrefix(vol, series string) string {
+	if series == "" || !strings.HasPrefix(strings.ToLower(vol), strings.ToLower(series)) {
+		return vol
+	}
+	v := strings.TrimLeft(vol[len(series):], " ,:-–—")
+	if v == "" {
+		return vol
+	}
+	return v
 }
 
 func (b *Bot) cmdSources(ctx context.Context) string {

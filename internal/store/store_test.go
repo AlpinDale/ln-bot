@@ -223,6 +223,60 @@ func TestUnpostedReleasesOrderedAndFiltered(t *testing.T) {
 	}
 }
 
+func TestSeriesQueries(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Two series; the first has multiple volumes and a physical edition.
+	mk := func(series, vol, format string, d time.Time) model.Release {
+		r := rel(vol, d)
+		r.SeriesTitle = series
+		r.VolumeTitle = vol
+		r.Format = format
+		return r
+	}
+	rows := []model.Release{
+		mk("Bookworm", "Bookworm Vol. 2", model.FormatDigital, date(2026, 2, 1)),
+		mk("Bookworm", "Bookworm Vol. 1", model.FormatDigital, date(2026, 1, 1)),
+		mk("Bookworm", "Bookworm Vol. 1", model.FormatPhysical, date(2026, 3, 1)),
+		mk("Booklover", "Booklover Vol. 1", model.FormatDigital, date(2026, 1, 15)),
+	}
+	for _, r := range rows {
+		if _, err := s.UpsertRelease(ctx, r, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Substring match is case-insensitive; prefix matches rank first.
+	got, err := s.DistinctSeries(ctx, "book", 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "Booklover" || got[1] != "Bookworm" {
+		t.Fatalf("DistinctSeries(book) = %v", got)
+	}
+	// Empty query returns everything (alphabetical), bounded by limit.
+	if got, _ = s.DistinctSeries(ctx, "", 1); len(got) != 1 || got[0] != "Booklover" {
+		t.Fatalf("DistinctSeries('' ,1) = %v", got)
+	}
+
+	// All editions of one series, chronologically.
+	rs, err := s.ReleasesForSeries(ctx, "bookworm") // case-insensitive
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rs) != 3 {
+		t.Fatalf("want 3 Bookworm rows, got %d", len(rs))
+	}
+	if !rs[0].ReleaseDate.Equal(date(2026, 1, 1)) || !rs[2].ReleaseDate.Equal(date(2026, 3, 1)) {
+		t.Fatalf("not chronological: %v .. %v", rs[0].ReleaseDate, rs[2].ReleaseDate)
+	}
+	if n, _ := s.ReleasesForSeries(ctx, "Nonexistent"); len(n) != 0 {
+		t.Fatalf("unknown series should be empty, got %d", len(n))
+	}
+}
+
 func TestScrapeRunHistory(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
