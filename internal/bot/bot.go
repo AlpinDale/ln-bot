@@ -65,12 +65,42 @@ func (b *Bot) Start() error {
 	if err := b.session.Open(); err != nil {
 		return fmt.Errorf("open gateway: %w", err)
 	}
-	if err := b.registerCommands(); err != nil {
-		b.session.Close()
-		return err
-	}
 	b.log.Info("discord connected", "guild", b.cfg.Discord.GuildID)
+	if err := b.registerCommands(); err != nil {
+		// Do NOT close the session and exit: the process would restart and
+		// re-identify to the gateway, and a persistent failure (e.g. the
+		// bot isn't in the configured guild) becomes a reconnect storm that
+		// burns the daily identify budget — Discord resets the token after
+		// ~1000. Stay connected on the single identify we already have and
+		// retry registration in the background instead.
+		b.log.Error("command registration failed; staying connected and retrying in background", "err", err)
+		go b.retryRegister()
+	}
 	return nil
+}
+
+// retryRegister re-attempts command registration with capped exponential
+// backoff, without reconnecting — so fixing the cause (e.g. re-inviting the
+// bot to the guild) is picked up with no restart and no extra identify.
+func (b *Bot) retryRegister() {
+	delay := 30 * time.Second
+	const maxDelay = 15 * time.Minute
+	for {
+		select {
+		case <-b.rootCtx.Done():
+			return
+		case <-time.After(delay):
+		}
+		if err := b.registerCommands(); err != nil {
+			b.log.Error("command registration retry failed", "err", err, "next_retry_in", delay.String())
+			if delay < maxDelay {
+				delay *= 2
+			}
+			continue
+		}
+		b.log.Info("commands registered on retry")
+		return
+	}
 }
 
 // Stop closes the gateway session.

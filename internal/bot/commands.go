@@ -114,6 +114,11 @@ func (b *Bot) sourceChoices() []*discordgo.ApplicationCommandOptionChoice {
 }
 
 func (b *Bot) registerCommands() error {
+	// After Open() the gateway READY normally populates State.User, but a
+	// reconnect race can leave it nil — guard rather than panic.
+	if b.session.State == nil || b.session.State.User == nil {
+		return fmt.Errorf("gateway session not ready (no user in state)")
+	}
 	appID := b.session.State.User.ID
 	// Clear GLOBAL commands: ours are guild-scoped, so anything global
 	// is stale (e.g. left over from a repurposed application ID).
