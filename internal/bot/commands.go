@@ -837,6 +837,11 @@ func (b *Bot) cmdArchive(ctx context.Context, i *discordgo.InteractionCreate) st
 		return "Nothing to archive — every release has already been posted here."
 	}
 
+	// The run outlives Discord's ~15-min interaction window, so the private
+	// completion notice goes to the invoker as a DM rather than an ephemeral
+	// followup (which would have expired by then).
+	uid := invokerID(i)
+
 	go func() {
 		defer b.archiving.Store(false)
 		b.log.Info("archive started", "count", len(pending))
@@ -858,15 +863,27 @@ func (b *Bot) cmdArchive(ctx context.Context, i *discordgo.InteractionCreate) st
 			posted++
 		}
 		b.log.Info("archive finished", "posted", posted, "total", len(pending))
-		if _, err := b.session.ChannelMessageSend(b.cfg.Discord.AlertChannelID,
-			fmt.Sprintf("📚 Archive complete — posted %d release(s) in date order.", posted)); err != nil {
-			b.log.Error("archive summary post failed", "err", err)
+		if err := b.dmUser(uid, fmt.Sprintf("📚 Archive complete — posted %d release(s) to the alert channel in date order.", posted)); err != nil {
+			b.log.Error("archive summary DM failed", "err", err)
 		}
 	}()
 
 	etaMin := max((len(pending)*int(archiveDelay/time.Millisecond)/1000+59)/60, 1)
-	return fmt.Sprintf("📚 Archiving %d release(s) to this channel in date order — about ~%d min "+
-		"(paced under Discord's rate limit). I'll post a marker when it's done.", len(pending), etaMin)
+	return fmt.Sprintf("📚 Archiving %d release(s) to the alert channel in date order — about ~%d min "+
+		"(paced under Discord's rate limit). I'll DM you when it's done.", len(pending), etaMin)
+}
+
+// dmUser sends content to userID's direct-message channel. Used for private
+// notices that outlive the interaction token (e.g. a finished archive run).
+func (b *Bot) dmUser(userID, content string) error {
+	ch, err := b.session.UserChannelCreate(userID)
+	if err != nil {
+		return fmt.Errorf("open DM channel: %w", err)
+	}
+	if _, err := b.session.ChannelMessageSend(ch.ID, content); err != nil {
+		return fmt.Errorf("send DM: %w", err)
+	}
+	return nil
 }
 
 // --- pagination ---
